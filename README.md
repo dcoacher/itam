@@ -18,8 +18,10 @@ Why we decided to made this application? The answer is pretty simple - every IT 
 It prevents equipment loss, tracks costs, manages assignments in every organization.
 
 ## 2. Code Explainations and Data Structure
-- Architecture Evolution of This Project Version
-- Project Files
+### Architecture Evolution of This Project Version
+TBA
+
+### Project Files
 - :file_folder: *`python`* folder contains application Python code and dummy data
     - :file_folder: *`dummy-data`* subfolder contains dummy data JSON files
         - :page_facing_up: *`items.json`* items dummy data JSON file
