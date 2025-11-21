@@ -27,6 +27,7 @@ It prevents equipment loss, tracks costs, manages assignments in every organizat
     - :page_facing_up: *`functions.py`* functions file for reusable logic of the main file
     - :page_facing_up: *`main.py`* main project file
     - :page_facing_up: *`storage.py`* storage file for operating with persistent storage
+
 <br>TBA
 
 ## 3. Deployment Process
