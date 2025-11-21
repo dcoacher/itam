@@ -26,8 +26,8 @@ TBA
 TBA
 
 ## 4. Previous Versions
-**Name:** [IT Asset Management](https://github.com/dcoacher/it-asset-management)
-**Version:** 1.0
+**Name:** [IT Asset Management](https://github.com/dcoacher/it-asset-management)<br>
+**Version:** 1.0<br>
 **Release date:** July 28, 2025
 
 ## 5. License
