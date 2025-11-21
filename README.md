@@ -20,6 +20,13 @@ It prevents equipment loss, tracks costs, manages assignments in every organizat
 ## 2. Code Explainations and Data Structure
 - Architecture Evolution of This Project Version
 - Project Files
+- :file_folder: *`python`* folder contains application Python code and dummy data
+    - :file_folder: *`dummy-data`* subfolder contains dummy data JSON files
+        - :page_facing_up: *`items.json`* items dummy data JSON file
+        - :page_facing_up: *`users.json`* users dummy data JSON file
+    - :page_facing_up: *`functions.py`* functions file for reusable logic of the main file
+    - :page_facing_up: *`main.py`* main project file
+    - :page_facing_up: *`storage.py`* storage file for operating with persistent storage
 TBA
 
 ## 3. Deployment Process
