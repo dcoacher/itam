@@ -18,7 +18,7 @@ Why we decided to made this application? The answer is pretty simple - every IT 
 It prevents equipment loss, tracks costs, manages assignments in every organization.
 
 ## 2. Code Explainations and Data Structure
-### Architecture Evolution of This Project Version
+Architecture Evolution of the Project:
 TBA
 
 ### Project Files
