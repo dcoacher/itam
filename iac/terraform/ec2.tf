@@ -4,7 +4,7 @@ resource "aws_instance" "CONTROL-PLANE" {
   ami                    = var.ami_id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.ITAM-KP.key_name
-  vpc_security_group_ids = [aws_security_group.ec2.id]
+  vpc_security_group_ids = [aws_security_group.ITAM-EC2-SG.id]
   subnet_id              = aws_subnet.ITAM-Public-Subnet-1.id
 
   user_data = <<-EOF
@@ -24,7 +24,7 @@ resource "aws_instance" "WORKER-1" {
   ami                    = var.ami_id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.ITAM-KP.key_name
-  vpc_security_group_ids = [aws_security_group.ec2.id]
+  vpc_security_group_ids = [aws_security_group.ITAM-EC2-SG.id]
   subnet_id              = aws_subnet.ITAM-Public-Subnet-1.id
 
   user_data = <<-EOF
@@ -44,7 +44,7 @@ resource "aws_instance" "WORKER-2" {
   ami                    = var.ami_id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.ITAM-KP.key_name
-  vpc_security_group_ids = [aws_security_group.ec2.id]
+  vpc_security_group_ids = [aws_security_group.ITAM-EC2-SG.id]
   subnet_id              = aws_subnet.ITAM-Public-Subnet-2.id
 
   user_data = <<-EOF
