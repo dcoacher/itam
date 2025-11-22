@@ -15,6 +15,7 @@ resource "local_sensitive_file" "private_key" {
 
 # Create AWS key pair from the generated public key
 resource "aws_key_pair" "ITAM-KP" {
+  provider = aws.North-Virginia
   key_name   = "itam-keypair"
   public_key = tls_private_key.ITAM-KP.public_key_openssh
 
