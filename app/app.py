@@ -1,4 +1,4 @@
-# Main application file contains Welcome Screen and Main Menu features
+# Main application file contains Welcome Screen and All Available Features
 # Importing necessary modules for the website
 from flask import Flask, render_template, request, redirect, url_for, flash
 import storage

@@ -1,6 +1,5 @@
 # Persistent storage for the CLI application
 # Dummy Data is stored in separate JSON files under python/dummy-data
-
 # Importing necessary modules
 from __future__ import annotations
 

@@ -22,12 +22,25 @@ Architecture Evolution of the Project:
 <br>TBA
 
 ### Project Files
-- :file_folder: *`python`* folder contains application Python code and dummy data
+- :file_folder: *`app`* folder contains all application data
     - :file_folder: *`dummy-data`* subfolder contains dummy data JSON files
         - :page_facing_up: *`items.json`* items dummy data JSON file
         - :page_facing_up: *`users.json`* users dummy data JSON file
-    - :page_facing_up: *`functions.py`* functions file for reusable logic of the main file
-    - :page_facing_up: *`main.py`* main project file
+    - :file_folder: *`website`* subfolder contains pre-rendered .html webpages for the website
+        - :page_facing_up: *`add_item.html`*
+        - :page_facing_up: *`add_user.html`*
+        - :page_facing_up: *`assign_item.html`*
+        - :page_facing_up: *`base.html`*
+        - :page_facing_up: *`delete_item.html`*
+        - :page_facing_up: *`index.html`*
+        - :page_facing_up: *`modify_item_form.html`* 
+        - :page_facing_up: *`modify_item_select.html`*
+        - :page_facing_up: *`show_stock_items.html`* 
+        - :page_facing_up: *`show_user_items_select.html`*
+        - :page_facing_up: *`show_user_items.html`*
+        - :page_facing_up: *`show_users.html`*
+        - :page_facing_up: *`stock_by_categoeirs.html`*
+    - :page_facing_up: *`app.py`* main application file
     - :page_facing_up: *`storage.py`* storage file for operating with persistent storage
 
 <br>TBA
