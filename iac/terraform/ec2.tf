@@ -1,6 +1,7 @@
 # EC2
 # Control Plane (Public Subnet 1)
 resource "aws_instance" "CONTROL-PLANE" {
+  provider = aws.North-Virginia
   ami                    = var.ami_id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.ITAM-KP.key_name
@@ -21,6 +22,7 @@ resource "aws_instance" "CONTROL-PLANE" {
 
 # Worker Node 1 (Public Subnet 1)
 resource "aws_instance" "WORKER-1" {
+  provider = aws.North-Virginia
   ami                    = var.ami_id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.ITAM-KP.key_name
@@ -41,6 +43,7 @@ resource "aws_instance" "WORKER-1" {
 
 # Worker Node 2 (Public Subnet 2)
 resource "aws_instance" "WORKER-2" {
+  provider = aws.North-Virginia
   ami                    = var.ami_id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.ITAM-KP.key_name
