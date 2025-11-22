@@ -26,7 +26,7 @@ Architecture Evolution of the Project:
     - :file_folder: *`dummy-data`* subfolder contains dummy data JSON files
         - :page_facing_up: *`items.json`* items dummy data JSON file
         - :page_facing_up: *`users.json`* users dummy data JSON file
-    - :file_folder: *`website`* subfolder contains pre-rendered .html webpages for the website
+    - :file_folder: *`website`* subfolder contains pre-rendered .html pages for the website
         - :page_facing_up: *`add_item.html`*
         - :page_facing_up: *`add_user.html`*
         - :page_facing_up: *`assign_item.html`*
