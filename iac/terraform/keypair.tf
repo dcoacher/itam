@@ -25,7 +25,7 @@ resource "aws_key_pair" "ITAM-KP" {
 }
 
 # KP Copying from Terraform to Ansible Control VM
-resource "terraform_data" "Key_Pair_Copy" {
+resource "terraform_data" "KP-Copy" {
   # Recreate this resource (and rerun provisioners) whenever the local key changes
   triggers_replace = {
     key_checksum = sha256(file("${path.module}/KP.pem"))
