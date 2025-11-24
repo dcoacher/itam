@@ -113,13 +113,6 @@ cat <<'EOF' >/home/ubuntu/ansible/k8s.yml
         enabled: yes
         state: started
 
-- name: Initialize control-plane node
-  hosts: control_plane
-  become: yes
-  vars:
-    kubernetes_version: "1.29.2-00"
-    pod_network_cidr: "10.244.0.0/16"
-  tasks:
     - name: Load br_netfilter module
       modprobe:
         name: br_netfilter
@@ -133,9 +126,21 @@ cat <<'EOF' >/home/ubuntu/ansible/k8s.yml
 
     - name: Configure kernel parameters for Kubernetes
       shell: |
-        echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.d/k8s.conf
-        echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.d/k8s.conf
+        if ! grep -q "net.bridge.bridge-nf-call-iptables" /etc/sysctl.d/k8s.conf 2>/dev/null; then
+          echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.d/k8s.conf
+        fi
+        if ! grep -q "net.ipv4.ip_forward" /etc/sysctl.d/k8s.conf 2>/dev/null; then
+          echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.d/k8s.conf
+        fi
         sysctl --system
+
+- name: Initialize control-plane node
+  hosts: control_plane
+  become: yes
+  vars:
+    kubernetes_version: "1.29.2-00"
+    pod_network_cidr: "10.244.0.0/16"
+  tasks:
 
     - name: Initialize Kubernetes control plane
       command: kubeadm init --pod-network-cidr={{ pod_network_cidr }} --ignore-preflight-errors=Mem
