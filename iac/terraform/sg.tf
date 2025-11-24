@@ -22,21 +22,21 @@ resource "aws_security_group" "ITAM-EC2-SG" {
     security_groups = [aws_security_group.ITAM-ALB-SG.id]
   }
 
-#   ingress {
-#     description = "Kubernetes API Server"
-#     from_port   = 6443
-#     to_port     = 6443
-#     protocol    = "tcp"
-#     cidr_blocks = [aws_vpc.ITAM-VPC.cidr_block]
-#   }
+  ingress {
+    description = "Kubernetes API Server"
+    from_port   = 6443
+    to_port     = 6443
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.ITAM-VPC.cidr_block]
+  }
 
-#   ingress {
-#     description = "NFS"
-#     from_port   = 2049
-#     to_port     = 2049
-#     protocol    = "tcp"
-#     cidr_blocks = [aws_vpc.ITAM-VPC.cidr_block]
-#   }
+  ingress {
+    description = "NFS"
+    from_port   = 2049
+    to_port     = 2049
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.ITAM-VPC.cidr_block]
+  }
 
   egress {
     from_port   = 0
