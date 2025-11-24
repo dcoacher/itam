@@ -6,31 +6,15 @@ add-apt-repository universe
 apt update
 apt install -y ansible python3 python3-pip python3-venv git
 
-mkdir -p /etc/ansible
+# Prepare workspace for Ansible playbooks
+mkdir -p /home/ubuntu/ansible
+chown ubuntu:ubuntu /home/ubuntu/ansible
+chmod 755 /home/ubuntu/ansible
 
-# Create Ansible hosts file (Inventory)
-cat <<EOF > /etc/ansible/hosts
-
-[control_plane]
-control-plane ansible_host="10.0.1.10"
-
-[workers]
-worker-1 ansible_host="10.0.1.11"
-worker-2 ansible_host="10.0.2.11"
-
-[all:vars]
-ansible_python_interpreter=/usr/bin/python3
-ansible_ssh_private_key_file=/home/ubuntu/KP.pem
-
-[all:vars]
-ansible_ssh_common_args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-
-EOF
-
-# Create ansible.cfg file
-cat <<EOF > /etc/ansible/ansible.cfg
+# Ansible.cfg
+cat <<'EOF' >/home/ubuntu/ansible/ansible.cfg
 [defaults]
-inventory = /etc/ansible/hosts
+inventory = inventory.ini
 remote_user = ubuntu
 private_key_file = ~/KP.pem
 host_key_checking = False
@@ -41,31 +25,34 @@ deprecation_warnings = False
 pipelining = True
 EOF
 
-# Create K8svars File
-cat <<EOF > /home/ubuntu/k8s-vars.yml
-kubernetes_version: "1.29.2-00"
-pod_network_cidr: "10.244.0.0/16"
-containerd_config_path: /etc/containerd/config.toml
-nfs_export_dir: /srv/nfs/k8s
-nfs_mount_dir: /mnt/nfs/k8s
-nfs_clients_cidr: "10.0.0.0/16"
-nfs_server_ip: "10.0.1.10"
+# Inventory files
+cat <<EOF >/home/ubuntu/ansible/inventory.ini
+[control_plane]
+control-plane ansible_host=${CONTROL-PLANE-PRIVATE-IP}
+
+[workers]
+worker-1 ansible_host=${WORKER-1-PRIVATE-IP}
+worker-2 ansible_host=${WORKER-2-PRIVATE-IP}
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
 EOF
 
-# Create K8s Deployment Playbook
-cat <<EOF > /home/ubuntu/k8s.yml
+# K8S Deployment Playbook
+cat <<'EOF' >/home/ubuntu/ansible/k8s.yml
 - name: Install Kubernetes prerequisites
   hosts: all
   become: yes
-  vars_files:
-    - k8s-vars.yml
+  vars:
+    kubernetes_version: "1.29.2-00"
+    pod_network_cidr: "10.244.0.0/16"
   tasks:
     - name: Ensure apt cache is updated
       apt:
         update_cache: yes
         cache_valid_time: 3600
 
-    - name: Install required packages
+    - name: Install required packages (base)
       apt:
         name:
           - apt-transport-https
@@ -73,6 +60,36 @@ cat <<EOF > /home/ubuntu/k8s.yml
           - curl
           - gnupg
           - containerd
+        state: present
+
+    - name: Create keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Kubernetes GPG key
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes repository
+      lineinfile:
+        path: /etc/apt/sources.list.d/kubernetes.list
+        line: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /"
+        create: yes
+        state: present
+
+    - name: Update apt cache after adding Kubernetes repo
+      apt:
+        update_cache: yes
+        cache_valid_time: 0
+
+    - name: Install Kubernetes packages
+      apt:
+        name:
           - kubelet={{ kubernetes_version }}
           - kubeadm={{ kubernetes_version }}
           - kubectl={{ kubernetes_version }}
@@ -96,8 +113,9 @@ cat <<EOF > /home/ubuntu/k8s.yml
 - name: Initialize control-plane node
   hosts: control_plane
   become: yes
-  vars_files:
-    - k8s-vars.yml
+  vars:
+    kubernetes_version: "1.29.2-00"
+    pod_network_cidr: "10.244.0.0/16"
   tasks:
     - name: Initialize Kubernetes control plane
       command: kubeadm init --pod-network-cidr={{ pod_network_cidr }}
@@ -123,13 +141,16 @@ cat <<EOF > /home/ubuntu/k8s.yml
         mode: "0700"
 EOF
 
-# Create NFS Deployment Playbook
-cat <<EOF > /home/ubuntu/nfs.yml
+# NFS Deployment Playbook
+cat <<EOF >/home/ubuntu/ansible/nfs.yml
 - name: Configure NFS server on control plane
   hosts: control_plane
   become: yes
-  vars_files:
-    - k8s-vars.yml
+  vars:
+    nfs_export_dir: /srv/nfs/k8s
+    nfs_mount_dir: /mnt/nfs/k8s
+    nfs_clients_cidr: "10.0.0.0/16"
+    nfs_server_ip: "10.0.1.10"
   tasks:
     - name: Install NFS server packages
       apt:
@@ -160,8 +181,11 @@ cat <<EOF > /home/ubuntu/nfs.yml
 - name: Configure NFS clients on workers
   hosts: workers
   become: yes
-  vars_files:
-    - k8s-vars.yml
+  vars:
+    nfs_export_dir: /srv/nfs/k8s
+    nfs_mount_dir: /mnt/nfs/k8s
+    nfs_clients_cidr: "10.0.0.0/16"
+    nfs_server_ip: "${CONTROL-PLANE-PRIVATE-IP}"
   tasks:
     - name: Install NFS common packages
       apt:
@@ -183,6 +207,6 @@ cat <<EOF > /home/ubuntu/nfs.yml
         state: mounted
 EOF
 
-# Setting permissions for the playbooks
-chown ubuntu:ubuntu /home/ubuntu/*
-chmod 0644 /home/ubuntu/*.yaml
+# Setting permissions
+chown -R ubuntu:ubuntu /home/ubuntu/ansible
+chmod 640 /home/ubuntu/ansible/*.yml /home/ubuntu/ansible/inventory.ini /home/ubuntu/ansible/ansible.cfg 2>/dev/null || true
