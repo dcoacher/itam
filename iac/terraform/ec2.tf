@@ -9,9 +9,33 @@ resource "aws_instance" "CONTROL-PLANE" {
   subnet_id              = aws_subnet.ITAM-Public-Subnet-1.id
 
   user_data = <<-EOF
-              #!/bin/bash
-              apt-get update
-              apt-get install -y python3-pip
+              set -eux
+
+              # Update system packages
+              apt-get update -y
+
+              # Install dependencies for Ansible and tooling
+              apt-get install -y \
+                python3 \
+                python3-pip \
+                python3-venv \
+                git \
+                curl \
+                unzip \
+                software-properties-common \
+                apt-transport-https \
+                ca-certificates \
+                gnupg \
+                lsb-release
+
+              # Install Ansible
+              pip3 install --upgrade pip
+              pip3 install ansible
+
+              # Prepare workspace for Ansible playbooks
+              mkdir -p /home/ubuntu/ansible
+              chown ubuntu:ubuntu /home/ubuntu/ansible
+              chmod 755 /home/ubuntu/ansible
               EOF
 
   tags = {
