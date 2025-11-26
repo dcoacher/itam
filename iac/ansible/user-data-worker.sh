@@ -1,5 +1,9 @@
 #!/bin/bash
 hostnamectl set-hostname k8s-worker
+kubeadm reset -f 2>/dev/null || true
+rm -rf /etc/cni/net.d
+rm -rf /var/lib/kubelet
+rm -rf /etc/kubernetes
 apt update
 swapoff -a
 sed -i '/ swap / s/^/#/' /etc/fstab
@@ -28,4 +32,3 @@ apt update
 apt install -y kubelet kubeadm kubectl
 apt-mark hold kubelet kubeadm kubectl
 apt install -y awscli nfs-common
-
