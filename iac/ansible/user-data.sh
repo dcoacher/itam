@@ -5,6 +5,7 @@ hostnamectl set-hostname k8s-controller
 add-apt-repository universe
 apt update
 apt install -y ansible python3 python3-pip python3-venv git
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 # Prepare workspace for Ansible playbooks
 mkdir -p /home/ubuntu/ansible
