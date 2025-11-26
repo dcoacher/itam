@@ -442,10 +442,25 @@ EOF
 cat <<'EOF' >/home/ubuntu/helm/deploy.sh
 #!/bin/bash
 # Simple deployment script for ITAM application on Kubernetes
-
-set -e
-
-echo "Deploying ITAM application to Kubernetes..."
+echo "Checking Kubernetes API server connectivity..."
+timeout=120
+elapsed=0
+while [ $elapsed -lt $timeout ]; do
+  if kubectl cluster-info &>/dev/null 2>&1; then
+    if kubectl get nodes &>/dev/null 2>&1; then
+      echo "API server is ready"
+      break
+    fi
+  fi
+  echo "Waiting for API server... ($elapsed/$timeout seconds)"
+  sleep 5
+  elapsed=$((elapsed+5))
+done
+if ! kubectl cluster-info &>/dev/null 2>&1; then
+  echo "Error: Cannot connect to Kubernetes API server"
+  echo "Please ensure cluster is initialized and API server is running"
+  exit 1
+fi
 
 # Step 1: Deploy NFS storage
 echo "Step 1: Deploying NFS storage..."
