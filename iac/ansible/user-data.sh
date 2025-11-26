@@ -194,6 +194,42 @@ cat <<'EOF' >/home/ubuntu/ansible/k8s.yml
         content: "{{ join_cmd.stdout }} --cri-socket unix:///var/run/containerd/containerd.sock"
         dest: /home/ubuntu/join-command.sh
         mode: "0700"
+        
+    - name: Install Flannel CNI plugin
+      shell: |
+        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      args:
+        creates: /tmp/flannel-installed
+      register: flannel_install
+      changed_when: flannel_install.rc == 0
+
+    - name: Wait for Flannel to be ready
+      shell: |
+        timeout=180
+        elapsed=0
+        node_count=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+        while [ $elapsed -lt $timeout ]; do
+          flannel_running=$(kubectl get pods -n kube-flannel --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
+          flannel_ready=$(kubectl get pods -n kube-flannel --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -c "1/1\|2/2" || echo "0")
+          if [ "$flannel_running" -ge "$node_count" ] && [ "$flannel_ready" -ge "$node_count" ]; then
+            echo "Flannel is ready ($flannel_ready/$node_count pods ready)"
+            exit 0
+          fi
+          echo "Waiting for Flannel... Running: $flannel_running/$node_count, Ready: $flannel_ready/$node_count ($elapsed/$timeout seconds)"
+          sleep 5
+          elapsed=$((elapsed + 5))
+        done
+        echo "Flannel did not become fully ready in time, but continuing..."
+        exit 0
+      register: flannel_wait
+      failed_when: false
+      when: flannel_install.rc == 0
+
+    - name: Remove taint from control plane to allow pod scheduling
+      shell: |
+        kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+        kubectl taint nodes --all node-role.kubernetes.io/master- || true
+      ignore_errors: yes
 EOF
 
 # NFS Deployment Playbook
@@ -365,6 +401,13 @@ spec:
       labels:
         app: {{ .Chart.Name }}
     spec:
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
       containers:
       - name: {{ .Chart.Name }}
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
@@ -441,71 +484,195 @@ EOF
 # deploy.sh
 cat <<'EOF' >/home/ubuntu/helm/deploy.sh
 #!/bin/bash
-# Simple deployment script for ITAM application on Kubernetes
+# Clean deployment script for ITAM application on Kubernetes
+# This script deploys the application without interfering with cluster stability
 
-set -e
+set -euo pipefail
 
-echo "Deploying ITAM application to Kubernetes..."
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-# Step 1: Deploy NFS storage
-echo "Step 1: Deploying NFS storage..."
-kubectl apply -f nfs-pv.yaml
+# Logging functions
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
 
-# Check PV status
-echo "Checking PersistentVolume status..."
-timeout=30
-elapsed=0
-while [ $elapsed -lt $timeout ]; do
-    pv_status=$(kubectl get pv itam-nfs-pv -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
-    if [ "$pv_status" = "Available" ] || [ "$pv_status" = "Bound" ]; then
-        echo "✓ PersistentVolume is ready (status: $pv_status)"
-        break
-    fi
-    if [ "$pv_status" = "NotFound" ]; then
-        echo "Waiting for PersistentVolume to be created... ($elapsed/$timeout seconds)"
-    else
-        echo "Waiting for PersistentVolume to be ready (current status: $pv_status)... ($elapsed/$timeout seconds)"
-    fi
-    sleep 2
-    elapsed=$((elapsed + 2))
-done
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
 
-# Show PV status
-echo ""
-echo "PersistentVolume status:"
-kubectl get pv itam-nfs-pv || echo "Warning: Could not retrieve PV status"
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
 
-# Step 2: Deploy application using Helm or kubectl
-if command -v helm &> /dev/null; then
-    echo "Step 2: Deploying application using Helm..."
-    helm upgrade --install itam-app . --values values.yaml
-else
-    echo "Step 2: Deploying application using kubectl..."
-    echo "Note: Helm not found, using kubectl instead"
-    kubectl apply -f templates/pvc.yaml
-    kubectl apply -f templates/deployment.yaml
-    kubectl apply -f templates/service.yaml
+# Check if kubectl is available
+if ! command -v kubectl &> /dev/null; then
+    log_error "kubectl is not installed or not in PATH"
+    exit 1
 fi
 
-# Step 3: Wait for deployment
-echo "Step 3: Waiting for deployment to be ready..."
-kubectl wait --for=condition=available deployment/itam-app --timeout=300s || true
+# Check API server connectivity (simple check, no retries)
+log_info "Checking Kubernetes API server connectivity..."
+if ! kubectl cluster-info &> /dev/null; then
+    log_error "Cannot connect to Kubernetes API server"
+    log_info "Please ensure:"
+    log_info "  1. Cluster is initialized: ls -la /etc/kubernetes/admin.conf"
+    log_info "  2. Kubeconfig is set: ls -la ~/.kube/config"
+    log_info "  3. API server is running: kubectl get nodes"
+    exit 1
+fi
 
-# Step 4: Show status
-echo ""
-echo "Deployment complete! Status:"
-echo "================================"
-kubectl get pods -l app=itam-app
-echo ""
-kubectl get svc itam-app
-echo ""
-kubectl get pvc
+log_info "✓ API server is accessible"
 
-echo ""
-echo "To access the application:"
-echo "  - NodePort: http://<node-ip>:31415"
-echo "  - Get node IPs: kubectl get nodes -o wide"
+# Check if cluster has nodes
+log_info "Checking cluster nodes..."
+NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l || echo "0")
+if [ "$NODE_COUNT" -eq 0 ]; then
+    log_error "No nodes found in cluster"
+    log_info "Please ensure nodes are joined to the cluster"
+    exit 1
+fi
 
+log_info "✓ Found $NODE_COUNT node(s)"
+
+# Step 1: Deploy NFS PersistentVolume
+log_info ""
+log_info "Step 1: Deploying NFS PersistentVolume..."
+
+if [ ! -f "nfs-pv.yaml" ]; then
+    log_error "nfs-pv.yaml not found in current directory"
+    exit 1
+fi
+
+kubectl apply -f nfs-pv.yaml
+
+# Wait briefly for PV to be created
+sleep 2
+
+PV_STATUS=$(kubectl get pv itam-nfs-pv -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+if [ "$PV_STATUS" = "NotFound" ]; then
+    log_warn "PersistentVolume not found, but continuing..."
+elif [ "$PV_STATUS" = "Available" ] || [ "$PV_STATUS" = "Bound" ]; then
+    log_info "✓ PersistentVolume is ready (status: $PV_STATUS)"
+else
+    log_warn "PersistentVolume status: $PV_STATUS"
+fi
+
+# Step 2: Deploy application
+log_info ""
+log_info "Step 2: Deploying application..."
+
+if command -v helm &> /dev/null; then
+    log_info "Using Helm to deploy..."
+    
+    if [ ! -f "values.yaml" ]; then
+        log_error "values.yaml not found"
+        exit 1
+    fi
+    
+    # Deploy with Helm
+    helm upgrade --install itam-app . \
+        --values values.yaml \
+        --timeout 5m \
+        --wait=false || {
+        log_warn "Helm deployment had issues, but resources may have been created"
+    }
+    
+    log_info "✓ Helm deployment initiated"
+else
+    log_info "Helm not found, using kubectl..."
+    
+    if [ ! -d "templates" ]; then
+        log_error "templates directory not found"
+        exit 1
+    fi
+    
+    # Deploy PVC
+    if [ -f "templates/pvc.yaml" ]; then
+        kubectl apply -f templates/pvc.yaml
+        log_info "✓ PVC applied"
+    fi
+    
+    # Deploy Deployment
+    if [ -f "templates/deployment.yaml" ]; then
+        kubectl apply -f templates/deployment.yaml
+        log_info "✓ Deployment applied"
+    fi
+    
+    # Deploy Service
+    if [ -f "templates/service.yaml" ]; then
+        kubectl apply -f templates/service.yaml
+        log_info "✓ Service applied"
+    fi
+fi
+
+# Step 3: Wait for deployment (simple wait, no complex checks)
+log_info ""
+log_info "Step 3: Waiting for deployment to be ready..."
+
+MAX_WAIT=300
+ELAPSED=0
+READY=false
+
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+    # Simple check: are pods running?
+    RUNNING_PODS=$(kubectl get pods -l app=itam-app --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l || echo "0")
+    TOTAL_PODS=$(kubectl get pods -l app=itam-app --no-headers 2>/dev/null | wc -l || echo "0")
+    
+    if [ "$TOTAL_PODS" -gt 0 ]; then
+        # Check if deployment is ready (if using Helm/Deployment)
+        if kubectl wait --for=condition=available deployment/itam-app --timeout=10s &> /dev/null 2>&1; then
+            log_info "✓ Deployment is ready!"
+            READY=true
+            break
+        fi
+        
+        # Show progress
+        log_info "Waiting... Running: $RUNNING_PODS/$TOTAL_PODS pods ($ELAPSED/$MAX_WAIT seconds)"
+    else
+        log_info "Waiting for pods to be created... ($ELAPSED/$MAX_WAIT seconds)"
+    fi
+    
+    sleep 10
+    ELAPSED=$((ELAPSED + 10))
+done
+
+# Step 4: Show final status
+log_info ""
+log_info "Deployment Status:"
+log_info "================================"
+
+# Show pods
+log_info ""
+log_info "Pods:"
+kubectl get pods -l app=itam-app 2>/dev/null || log_warn "Could not retrieve pods"
+
+# Show service
+log_info ""
+log_info "Service:"
+kubectl get svc itam-app 2>/dev/null || log_warn "Could not retrieve service"
+
+# Show PVC
+log_info ""
+log_info "PVC:"
+kubectl get pvc itam-app-pvc 2>/dev/null || log_warn "Could not retrieve PVC"
+
+# Final message
+log_info ""
+if [ "$READY" = true ]; then
+    log_info "✓ Deployment completed successfully!"
+else
+    log_warn "Deployment may still be in progress"
+    log_info "Check status with: kubectl get pods -l app=itam-app"
+fi
+
+log_info ""
+log_info "To access the application:"
+log_info "  - NodePort: http://<node-ip>:31415"
+log_info "  - Get node IPs: kubectl get nodes -o wide"
 EOF
 
 # Set permissions for helm folder
