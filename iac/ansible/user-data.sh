@@ -5,7 +5,6 @@ hostnamectl set-hostname k8s-controller
 add-apt-repository universe
 apt update
 apt install -y ansible python3 python3-pip python3-venv git
-curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 # Prepare workspace for Ansible playbooks
 mkdir -p /home/ubuntu/ansible
@@ -265,3 +264,232 @@ EOF
 # Setting permissions
 chown -R ubuntu:ubuntu /home/ubuntu/ansible
 chmod 640 /home/ubuntu/ansible/*.yml /home/ubuntu/ansible/inventory.ini /home/ubuntu/ansible/ansible.cfg 2>/dev/null || true
+
+# Prepare workspace for Helm charts
+mkdir -p /home/ubuntu/helm/templates
+chown ubuntu:ubuntu /home/ubuntu/helm
+chmod 755 /home/ubuntu/helm
+chmod 755 /home/ubuntu/helm/templates
+
+# Chart.yaml
+cat <<'EOF' >/home/ubuntu/helm/Chart.yaml
+# Helm chart for ITAM Flask application
+apiVersion: v2
+name: itam-app
+description: ITAM Flask web application
+type: application
+version: 1.0.0
+appVersion: "1.0"
+
+EOF
+
+# values.yaml
+cat <<'EOF' >/home/ubuntu/helm/values.yaml
+# Default values for itam-app
+replicaCount: 2
+
+image:
+  repository: docker.io/<your-dockerhub-username>/itam-app
+  tag: "latest"
+  pullPolicy: Always
+
+service:
+  type: NodePort
+  port: 31415
+  nodePort: 31415
+
+persistence:
+  enabled: true
+  storageClass: "nfs-client"
+  accessMode: ReadWriteMany
+  size: 1Gi
+  mountPath: /app/dummy-data
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "200m"
+
+EOF
+
+# nfs-pv.yaml
+cat <<'EOF' >/home/ubuntu/helm/nfs-pv.yaml
+# NFS StorageClass and PersistentVolume for ITAM application
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: itam-nfs-pv
+  labels:
+    type: nfs
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-client
+  nfs:
+    path: /srv/nfs/k8s
+    server: 10.0.1.10
+
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-client
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: Immediate
+
+EOF
+
+# templates/deployment.yaml
+cat <<'EOF' >/home/ubuntu/helm/templates/deployment.yaml
+# Deployment for ITAM Flask application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name }}
+    spec:
+      containers:
+      - name: {{ .Chart.Name }}
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.service.port }}
+          name: http
+        env:
+        - name: ITAM_DATA_DIR
+          value: {{ .Values.persistence.mountPath }}
+        - name: PORT
+          value: "{{ .Values.service.port }}"
+        - name: FLASK_DEBUG
+          value: "False"
+        volumeMounts:
+        - name: data
+          mountPath: {{ .Values.persistence.mountPath }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+      volumes:
+      - name: data
+        {{- if .Values.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ .Chart.Name }}-pvc
+        {{- end }}
+
+EOF
+
+# templates/pvc.yaml
+cat <<'EOF' >/home/ubuntu/helm/templates/pvc.yaml
+# Persistent Volume Claim for ITAM application data
+{{- if .Values.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Chart.Name }}-pvc
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  storageClassName: {{ .Values.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}
+
+EOF
+
+# templates/service.yaml
+cat <<'EOF' >/home/ubuntu/helm/templates/service.yaml
+# Service for ITAM Flask application
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.port }}
+    targetPort: http
+    protocol: TCP
+    name: http
+    {{- if eq .Values.service.type "NodePort" }}
+    nodePort: {{ .Values.service.nodePort }}
+    {{- end }}
+  selector:
+    app: {{ .Chart.Name }}
+
+EOF
+
+# deploy.sh
+cat <<'EOF' >/home/ubuntu/helm/deploy.sh
+#!/bin/bash
+# Simple deployment script for ITAM application on Kubernetes
+
+set -e
+
+echo "Deploying ITAM application to Kubernetes..."
+
+# Step 1: Deploy NFS storage
+echo "Step 1: Deploying NFS storage..."
+kubectl apply -f nfs-pv.yaml
+
+# Wait for PV to be available
+echo "Waiting for PersistentVolume to be available..."
+kubectl wait --for=condition=Available pv/itam-nfs-pv --timeout=60s || true
+
+# Step 2: Deploy application using Helm or kubectl
+if command -v helm &> /dev/null; then
+    echo "Step 2: Deploying application using Helm..."
+    helm upgrade --install itam-app . --values values.yaml
+else
+    echo "Step 2: Deploying application using kubectl..."
+    echo "Note: Helm not found, using kubectl instead"
+    kubectl apply -f templates/pvc.yaml
+    kubectl apply -f templates/deployment.yaml
+    kubectl apply -f templates/service.yaml
+fi
+
+# Step 3: Wait for deployment
+echo "Step 3: Waiting for deployment to be ready..."
+kubectl wait --for=condition=available deployment/itam-app --timeout=300s || true
+
+# Step 4: Show status
+echo ""
+echo "Deployment complete! Status:"
+echo "================================"
+kubectl get pods -l app=itam-app
+echo ""
+kubectl get svc itam-app
+echo ""
+kubectl get pvc
+
+echo ""
+echo "To access the application:"
+echo "  - NodePort: http://<node-ip>:31415"
+echo "  - Get node IPs: kubectl get nodes -o wide"
+
+EOF
+
+# Set permissions for helm folder
+chown -R ubuntu:ubuntu /home/ubuntu/helm
+chmod 755 /home/ubuntu/helm
+chmod 644 /home/ubuntu/helm/*.yaml /home/ubuntu/helm/Chart.yaml 2>/dev/null || true
+chmod 755 /home/ubuntu/helm/deploy.sh
+chmod 644 /home/ubuntu/helm/templates/*.yaml 2>/dev/null || true
