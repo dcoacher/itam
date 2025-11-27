@@ -3,9 +3,11 @@
 from flask import Flask, render_template, request, redirect, url_for, flash
 import storage
 
-# Load data from persistent storage
-items_db = storage.load_items()   # Load items database data from disk
-users_db = storage.load_users()   # Load users database data from disk
+# Global variables for in-memory cache
+items_db = {}
+users_db = {}
+item_id_counter = 1
+user_id_counter = 1
 
 
 def _initial_counter(db):   # Calculate initial counter from existing data
@@ -14,11 +16,27 @@ def _initial_counter(db):   # Calculate initial counter from existing data
     return max(int(key) for key in db.keys()) + 1
 
 
-item_id_counter = _initial_counter(items_db)   # Creation of Item ID Counter value
-user_id_counter = _initial_counter(users_db)   # Creation of User ID Counter value
+def _reload_data():
+    """Reload data from disk to ensure all workers have latest data"""
+    global items_db, users_db, item_id_counter, user_id_counter
+    items_db = storage.load_items()
+    users_db = storage.load_users()
+    item_id_counter = _initial_counter(items_db)
+    user_id_counter = _initial_counter(users_db)
+
+
+# Initialize data on startup
+_reload_data()
 
 app = Flask(__name__, template_folder="website")
 app.secret_key = "supersecretkey"  # Needed for flashing messages
+
+# Reload data before GET requests to ensure consistency across workers
+# Skip reload for POST requests that just saved data
+@app.before_request
+def before_request():
+    if request.method == "GET" and request.endpoint != "health":
+        _reload_data()
 
 # Health check endpoint for ALB
 @app.route("/health")
