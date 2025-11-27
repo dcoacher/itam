@@ -35,13 +35,3 @@ output "WORKER-2-PRIVATE-IP" {
   value       = aws_instance.WORKER-2.private_ip
 }
 
-output "SSH-TO-CONTROL-PLANE" {
-  description = "SSH Command to K8s Control Plane"
-  value       = "ssh -i KP.pem ubuntu@${aws_instance.CONTROL-PLANE.public_ip}"
-}
-
-output "JOIN-TO-K8s-CLUSTER" {
-  description = "Command for Joining Workers to K8s Cluster"
-  value       = "After Deploying K8S Env - Run The Following Command on Control Plane: cat /home/ubuntu/join-command.sh"
-}
-

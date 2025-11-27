@@ -424,3 +424,15 @@ EOF
 chown -R ubuntu:ubuntu /home/ubuntu/helm
 chmod 755 /home/ubuntu/helm /home/ubuntu/helm/deploy.sh
 chmod 644 /home/ubuntu/helm/*.yaml /home/ubuntu/helm/Chart.yaml /home/ubuntu/helm/templates/*.yaml 2>/dev/null || true
+
+echo "============================================================================"
+echo "                        Post-Deployment Steps:"
+echo "============================================================================"
+echo "Step 1: Rename The Workers EC2 Instances Accordingly:"
+echo 'ssh -i KP.pem ubuntu@10.0.1.11 "sudo hostnamectl set-hostname k8s-worker-1"'
+echo 'ssh -i KP.pem ubuntu@10.0.2.11 "sudo hostnamectl set-hostname k8s-worker-2"'
+echo "============================================================================"
+echo "Step 2: Run the Commands Below in Order to Join Workers to K8s Cluster:"
+echo 'ssh -i KP.pem ubuntu@10.0.1.11 "sudo $(cat /home/ubuntu/join-command.sh)"'
+echo 'ssh -i KP.pem ubuntu@10.0.2.11 "sudo $(cat /home/ubuntu/join-command.sh)"'
+echo "============================================================================"
