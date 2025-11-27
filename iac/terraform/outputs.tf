@@ -35,3 +35,7 @@ output "WORKER-2-PRIVATE-IP" {
   value       = aws_instance.WORKER-2.private_ip
 }
 
+output "SSH-TO-CONTROL-PLANE" {
+  description = "SSH Command to K8s Control Plane"
+  value       = "ssh -i KP.pem ubuntu@${aws_instance.CONTROL-PLANE.public_ip}"
+}
