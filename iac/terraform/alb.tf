@@ -27,8 +27,8 @@ resource "aws_lb_target_group" "ITAM-TG" {
     healthy_threshold   = 2
     unhealthy_threshold = 2
     timeout             = 5
-    interval            = 15
-    path                = "/"
+    interval            = 10
+    path                = "/health"
     protocol            = "HTTP"
     port                = 31415
   }
