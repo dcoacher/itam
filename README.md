@@ -41,9 +41,27 @@ Architecture Evolution of the Project:
         - :page_facing_up: *`show_users.html`*
         - :page_facing_up: *`stock_by_categoeirs.html`*
     - :page_facing_up: *`app.py`* main application file
-    - :page_facing_up: *`requirements.txt`* environment dependencies required for installation file
     - :page_facing_up: *`storage.py`* storage file for operating with persistent storage
-- :page_facing_up: *`Dockerfile`* configuration file for Docker environment
+- :page_facing_up: *`docker`* folder contains Docker deployment data
+    - :page_facing_up: *`Dockerfile`* configuration file for Docker environment
+- :page_facing_up: *`iac`* folder contains IaC deployment data
+    - :file_folder: *`scripts`* subfolder contains user data scripts for control plane and workers deployment
+        - :page_facing_up: *`user-data-control-plane.sh`*
+        - :page_facing_up: *`user-data-worker.sh`*
+    - :file_folder: *`terraform`* subfolder contains AWS deployment data
+        - :page_facing_up: *`alb.tf`* Load Balancer
+        - :page_facing_up: *`ec2.tf`* EC2 instances
+        - :page_facing_up: *`keypair.tf`* Keypair
+        - :page_facing_up: *`network.tf`* Network (VPC, Subnets, IGW, Routes)
+        - :page_facing_up: *`outputs.tf`* AWS Environment Outputs Data
+        - :page_facing_up: *`providers.tf`* Terraform Providers
+        - :page_facing_up: *`sg.tf`* Security Groups
+        - :page_facing_up: *`terraform.tfvars`* Terraform Tfvars
+        - :page_facing_up: *`variables.tf`* Terraform Variables
+- :page_facing_up: *`LICENSE`* License Information
+- :page_facing_up: *`README.md`* Readme File
+- :page_facing_up: *`USER-GUIDE.md`* Application Usage User Guide
+
 
 <br>TBA
 
