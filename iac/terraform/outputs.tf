@@ -37,5 +37,5 @@ output "WORKER-2-PRIVATE-IP" {
 
 output "SSH-TO-CONTROL-PLANE" {
   description = "SSH Command to K8s Control Plane"
-  value       = "ssh -i KP.pem ubuntu@${aws_instance.CONTROL-PLANE.public_ip} and run cat /home/ubuntu/readme.txt"
+  value       = "ssh -i KP.pem ubuntu@${aws_instance.CONTROL-PLANE.public_ip} and run 'cat readme.txt for further instructions'"
 }
