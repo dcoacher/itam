@@ -1,4 +1,4 @@
-# Main application file contains Welcome Screen and All Available Features
+# Main application file contains Welcome Screen and Main Menu features
 # Importing necessary modules for the website
 from flask import Flask, render_template, request, redirect, url_for, flash
 import storage
@@ -7,16 +7,23 @@ import storage
 items_db = storage.load_items()   # Load items database data from disk
 users_db = storage.load_users()   # Load users database data from disk
 
+
 def _initial_counter(db):   # Calculate initial counter from existing data
     if not db:
         return 1
     return max(int(key) for key in db.keys()) + 1
+
 
 item_id_counter = _initial_counter(items_db)   # Creation of Item ID Counter value
 user_id_counter = _initial_counter(users_db)   # Creation of User ID Counter value
 
 app = Flask(__name__, template_folder="website")
 app.secret_key = "supersecretkey"  # Needed for flashing messages
+
+# Health check endpoint for ALB
+@app.route("/health")
+def health():
+    return {"status": "healthy"}, 200
 
 # Helper function for menu links
 def get_menu_links(): # Return list of menu links
@@ -198,6 +205,7 @@ def show_user_items_select():
     
     # GET method: render user selection form
     return render_template("show_user_items_select.html", users=users_db, menu_links=get_menu_links())
+
 
 @app.route("/show_user_items/<user_id>") # Show Items by User ID Route
 def show_user_items(user_id):
