@@ -1258,16 +1258,44 @@ jobs:
           volumeBindingMode: Immediate
           EOF
 
-      - name: Deploy application using deploy.sh
+      - name: Ensure control plane taint and deploy application
         run: |
           set -e
           CONTROL_PLANE_IP="${{ needs.infrastructure.outputs.control_plane_ip }}"
           IMAGE_REPO="${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}"
           IMAGE_TAG="${{ env.DOCKER_TAG }}"
+          
+          echo "Ensuring control plane has taint to prevent pod scheduling..."
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
+            # Check if taint exists, if not add it
+            if ! kubectl get nodes k8s-controller -o jsonpath='{.spec.taints}' | grep -q "node-role.kubernetes.io/control-plane"; then
+              echo "Adding taint to control plane to prevent pod scheduling..."
+              kubectl taint nodes k8s-controller node-role.kubernetes.io/control-plane:NoSchedule --overwrite || \
+              kubectl taint nodes k8s-controller node-role.kubernetes.io/master:NoSchedule --overwrite || true
+            else
+              echo "Control plane taint already exists"
+            fi
+          ENDSSH
+          
           echo "Deploying with image: $IMAGE_REPO:$IMAGE_TAG"
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
             cd /home/ubuntu/helm
             ./deploy.sh "$IMAGE_REPO" "$IMAGE_TAG"
+          ENDSSH
+          
+          echo "Verifying pods are scheduled on worker nodes..."
+          sleep 10
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
+            kubectl get pods -l app=itam-app -o wide
+            echo ""
+            echo "Checking node distribution..."
+            PODS_ON_CONTROL=$(kubectl get pods -l app=itam-app -o wide --no-headers | grep k8s-controller | wc -l || echo "0")
+            if [ "$PODS_ON_CONTROL" != "0" ]; then
+              echo "⚠ WARNING: $PODS_ON_CONTROL pod(s) are still on control plane"
+              echo "This may cause ALB health check failures"
+            else
+              echo "✓ All pods are on worker nodes"
+            fi
           ENDSSH
 
       - name: Wait for deployment rollout to complete
