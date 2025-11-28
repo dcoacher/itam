@@ -1306,18 +1306,19 @@ jobs:
           kubectl get svc itam-app
           echo ""
           
-          # Get pod name and verify health endpoint
-          POD_NAME=$(kubectl get pods -l app=itam-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          # Get a Running pod (not Terminating)
+          POD_NAME=$(kubectl get pods -l app=itam-app -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' 2>/dev/null | awk '{print $1}' || echo "")
+          
           if [ -n "$POD_NAME" ]; then
-            echo "Testing health endpoint on pod: $POD_NAME"
+            echo "Testing health endpoint on Running pod: $POD_NAME"
             for i in {1..10}; do
               if kubectl exec "$POD_NAME" -- curl -s http://localhost:31415/health > /dev/null 2>&1; then
-                echo "✓ Health endpoint is responding"
+                echo "✓ Health endpoint is responding in pod"
                 kubectl exec "$POD_NAME" -- curl -s http://localhost:31415/health
                 break
               else
                 if [ $i -eq 10 ]; then
-                  echo "⚠ Health endpoint not responding after 10 attempts"
+                  echo "⚠ Health endpoint not responding in pod after 10 attempts"
                   echo "Checking pod logs..."
                   kubectl logs "$POD_NAME" --tail=50 || true
                 else
@@ -1326,6 +1327,8 @@ jobs:
                 fi
               fi
             done
+          else
+            echo "⚠ No Running pods found for health check"
           fi
           
           # Verify NodePort service
@@ -1334,6 +1337,36 @@ jobs:
             echo "✓ NodePort service is configured correctly (port 31415)"
           else
             echo "⚠ NodePort is $NODEPORT (expected 31415)"
+          fi
+          
+          # Test health endpoint via NodePort service on worker nodes
+          echo ""
+          echo "Testing health endpoint via NodePort service on worker nodes..."
+          WORKER1_IP="${{ needs.infrastructure.outputs.worker1_ip }}"
+          WORKER2_IP="${{ needs.infrastructure.outputs.worker2_ip }}"
+          
+          HEALTH_CHECK_PASSED=false
+          for WORKER_IP in "$WORKER1_IP" "$WORKER2_IP"; do
+            if [ -n "$WORKER_IP" ] && [ "$WORKER_IP" != "" ]; then
+              echo "Testing http://$WORKER_IP:31415/health..."
+              if curl -s --max-time 5 "http://$WORKER_IP:31415/health" > /dev/null 2>&1; then
+                echo "✓ Health endpoint accessible via NodePort on $WORKER_IP"
+                curl -s "http://$WORKER_IP:31415/health"
+                HEALTH_CHECK_PASSED=true
+                break
+              else
+                echo "⚠ Health endpoint not accessible on $WORKER_IP"
+              fi
+            fi
+          done
+          
+          if [ "$HEALTH_CHECK_PASSED" == "true" ]; then
+            echo "✓ Health endpoint is accessible via NodePort (ALB should be able to reach it)"
+          else
+            echo "⚠ Health endpoint not accessible via NodePort on worker nodes"
+            echo "This may cause ALB health check failures"
+            echo "Checking if pods are running on worker nodes..."
+            kubectl get pods -l app=itam-app -o wide
           fi
           
           echo ""
