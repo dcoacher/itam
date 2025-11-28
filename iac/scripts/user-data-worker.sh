@@ -1,5 +1,7 @@
 #!/bin/bash
-hostnamectl set-hostname k8s-worker
+# Get unique instance ID for hostname
+INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id || echo "worker")
+hostnamectl set-hostname k8s-worker-${INSTANCE_ID}
 kubeadm reset -f 2>/dev/null || true
 rm -rf /etc/cni/net.d
 rm -rf /var/lib/kubelet
