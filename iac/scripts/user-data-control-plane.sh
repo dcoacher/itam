@@ -270,15 +270,8 @@ spec:
       labels:
         app: {{ .Chart.Name }}
     spec:
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: node-role.kubernetes.io/control-plane
-                operator: DoesNotExist
-              - key: node-role.kubernetes.io/master
-                operator: DoesNotExist
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
       containers:
       - name: {{ .Chart.Name }}
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
@@ -498,18 +491,3 @@ EOF
 chown -R ubuntu:ubuntu /home/ubuntu/helm
 chmod 755 /home/ubuntu/helm /home/ubuntu/helm/deploy.sh
 chmod 644 /home/ubuntu/helm/*.yaml /home/ubuntu/helm/Chart.yaml /home/ubuntu/helm/templates/*.yaml 2>/dev/null || true
-
-cat <<'EOF' >/home/ubuntu/readme.txt
-============================================================================
-                        Post-Deployment Steps:
-============================================================================
-         Step 1: Rename The Workers EC2 Instances Accordingly:
-ssh -i KP.pem ubuntu@10.0.1.11 "sudo hostnamectl set-hostname k8s-worker-1"
-ssh -i KP.pem ubuntu@10.0.2.11 "sudo hostnamectl set-hostname k8s-worker-2"
-============================================================================
-   Step 2: Run the Commands Below in Order to Join Workers to K8s Cluster:
-ssh -i KP.pem ubuntu@10.0.1.11 "sudo $(cat /home/ubuntu/join-command.sh)"
-ssh -i KP.pem ubuntu@10.0.2.11 "sudo $(cat /home/ubuntu/join-command.sh)"
-============================================================================
-EOF
-chmod 644 /home/ubuntu/readme.txt

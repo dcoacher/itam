@@ -1265,7 +1265,7 @@ jobs:
           IMAGE_REPO="${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}"
           IMAGE_TAG="${{ env.DOCKER_TAG }}"
           
-          echo "Ensuring control plane has taint to prevent pod scheduling..."
+          echo "Ensuring control plane has taint and labeling worker nodes..."
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
             # Check if taint exists, if not add it
             if ! kubectl get nodes k8s-controller -o jsonpath='{.spec.taints}' | grep -q "node-role.kubernetes.io/control-plane"; then
@@ -1275,6 +1275,18 @@ jobs:
             else
               echo "Control plane taint already exists"
             fi
+            
+            # Label worker nodes so we can use nodeSelector
+            echo "Labeling worker nodes..."
+            for node in \$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+              if [ "\$node" != "k8s-controller" ]; then
+                echo "Labeling worker node: \$node"
+                kubectl label node "\$node" node-role.kubernetes.io/worker=true --overwrite || true
+              fi
+            done
+            
+            echo "Current node labels:"
+            kubectl get nodes --show-labels
           ENDSSH
           
           echo "Deploying with image: $IMAGE_REPO:$IMAGE_TAG"
