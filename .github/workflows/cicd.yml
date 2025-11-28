@@ -531,12 +531,70 @@ jobs:
             fi
           done
 
+      - name: Prepare SSH key for artifact upload
+        continue-on-error: true
+        working-directory: iac/terraform
+        run: |
+          # Check if KP.pem exists (created by Terraform during apply)
+          if [ -f "KP.pem" ]; then
+            echo "✓ SSH key found: KP.pem (created by Terraform)"
+          else
+            echo "KP.pem not found. This is normal when using existing infrastructure."
+            echo "Attempting to retrieve from Terraform state..."
+            
+            # Try to get private key from Terraform state
+            if terraform state show tls_private_key.ITAM-KP &>/dev/null 2>&1; then
+              echo "Found tls_private_key in state. Extracting private key..."
+              # Try JSON output first
+              PRIVATE_KEY=$(terraform state show -json tls_private_key.ITAM-KP 2>/dev/null | grep -o '"private_key_pem": "[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+              
+              if [ -n "$PRIVATE_KEY" ] && [ "$PRIVATE_KEY" != "null" ]; then
+                echo "$PRIVATE_KEY" > KP.pem
+                chmod 600 KP.pem
+                echo "✓ SSH key retrieved from Terraform state (JSON)"
+              else
+                # Try text output
+                PRIVATE_KEY=$(terraform state show tls_private_key.ITAM-KP 2>/dev/null | grep "private_key_pem" | head -1 | sed 's/.*= "\(.*\)".*/\1/' || echo "")
+                if [ -n "$PRIVATE_KEY" ] && [ "$PRIVATE_KEY" != "null" ]; then
+                  echo "$PRIVATE_KEY" > KP.pem
+                  chmod 600 KP.pem
+                  echo "✓ SSH key retrieved from Terraform state (text)"
+                else
+                  echo "Could not extract private key from state"
+                fi
+              fi
+            else
+              echo "⚠ Could not find SSH key in Terraform state."
+              echo "This may happen when:"
+              echo "  1. Infrastructure was created outside Terraform"
+              echo "  2. Terraform state doesn't include the key"
+              echo "  3. This is the first run and key hasn't been created yet"
+              echo ""
+              echo "The SSH key will be available from:"
+              echo "  - Previous workflow artifact (if available)"
+              echo "  - Or will be created when Terraform apply runs"
+            fi
+          fi
+          
+          # Verify the key file exists and is valid
+          if [ -f "KP.pem" ]; then
+            KEY_SIZE=$(wc -c < KP.pem)
+            if [ "$KEY_SIZE" -gt 100 ]; then
+              echo "✓ SSH key file is valid (size: $KEY_SIZE bytes)"
+            else
+              echo "⚠ WARNING: SSH key file seems too small. It may be invalid."
+              rm -f KP.pem
+            fi
+          fi
+
       - name: Upload SSH key as artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ssh-key
           path: iac/terraform/KP.pem
           retention-days: 1
+          if-no-files-found: warn
 
       - name: Wait for EC2 instances to be ready
         timeout-minutes: 10
@@ -746,14 +804,28 @@ jobs:
       - name: Set up SSH keys
         run: |
           mkdir -p ~/.ssh
-          cp iac/terraform/KP.pem ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
           CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
           WORKER1_IP="${{ steps.terraform-output.outputs.worker1_ip }}"
           WORKER2_IP="${{ steps.terraform-output.outputs.worker2_ip }}"
-          ssh-keyscan -H $CONTROL_PLANE_IP >> ~/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan -H $WORKER1_IP >> ~/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan -H $WORKER2_IP >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          # Check if KP.pem exists (created by Terraform or prepared step)
+          if [ -f "iac/terraform/KP.pem" ]; then
+            echo "Using SSH key from Terraform output..."
+            cp iac/terraform/KP.pem ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+          else
+            echo "SSH key not found. This may happen when using existing infrastructure."
+            echo "The SSH key will be retrieved from artifact in the deploy phase."
+            echo "Skipping SSH setup in infrastructure phase (not needed for existing infrastructure)."
+            # Don't create a placeholder - it will be handled in deploy phase
+          fi
+          
+          # Only add to known_hosts if we have the key
+          if [ -f "~/.ssh/id_rsa" ] || [ -f "iac/terraform/KP.pem" ]; then
+            ssh-keyscan -H $CONTROL_PLANE_IP >> ~/.ssh/known_hosts 2>/dev/null || true
+            ssh-keyscan -H $WORKER1_IP >> ~/.ssh/known_hosts 2>/dev/null || true
+            ssh-keyscan -H $WORKER2_IP >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
 
       - name: Wait for Kubernetes control plane to be ready
         if: steps.terraform-plan.outputs.has_changes == 'true'
@@ -899,10 +971,39 @@ jobs:
           version: 'latest'
 
       - name: Download SSH key artifact
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: ssh-key
           path: ~/.ssh/
+
+      - name: Verify or retrieve SSH key
+        continue-on-error: true
+        run: |
+          mkdir -p ~/.ssh
+          
+          # Check if artifact download worked (use $HOME instead of ~ in file checks)
+          if [ -f "$HOME/.ssh/KP.pem" ]; then
+            echo "✓ SSH key downloaded from artifact"
+            mv "$HOME/.ssh/KP.pem" "$HOME/.ssh/id_rsa"
+            chmod 600 "$HOME/.ssh/id_rsa"
+          elif [ -f "$HOME/.ssh/id_rsa" ]; then
+            echo "✓ SSH key already available"
+            chmod 600 "$HOME/.ssh/id_rsa"
+          else
+            echo "⚠ WARNING: SSH key not found in artifact."
+            echo "This may happen when:"
+            echo "  1. Artifact expired (retention is 1 day)"
+            echo "  2. First run and infrastructure already exists"
+            echo "  3. Infrastructure was created outside this workflow"
+            echo ""
+            echo "The SSH key should have been prepared in the infrastructure phase."
+            echo "If this fails, you may need to:"
+            echo "  1. Re-run infrastructure creation to generate new key"
+            echo "  2. Or manually provide the SSH key"
+            echo ""
+            echo "For now, the workflow will continue and may fail at deployment step."
+          fi
 
       - name: Set up SSH and get kubeconfig
         run: |
