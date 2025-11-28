@@ -1258,6 +1258,25 @@ jobs:
           volumeBindingMode: Immediate
           EOF
 
+      - name: Ensure control plane taint and label worker nodes
+        run: |
+          CONTROL_PLANE_IP="${{ needs.infrastructure.outputs.control_plane_ip }}"
+          echo "Ensuring control plane taint and labeling worker nodes..."
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
+            # Ensure control plane has taint
+            kubectl taint nodes k8s-controller node-role.kubernetes.io/control-plane:NoSchedule --overwrite 2>/dev/null || \
+            kubectl taint nodes k8s-controller node-role.kubernetes.io/master:NoSchedule --overwrite 2>/dev/null || \
+            echo "Taint already exists"
+            
+            # Label worker nodes
+            for node in \$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+              if [ "\$node" != "k8s-controller" ]; then
+                kubectl label nodes \$node node-type=worker --overwrite 2>/dev/null || true
+                echo "Labeled \$node as worker"
+              fi
+            done
+          ENDSSH
+
       - name: Deploy application using deploy.sh
         run: |
           set -e
@@ -1276,6 +1295,16 @@ jobs:
           echo "=== Verifying deployment ==="
           kubectl get pods -l app=itam-app -o wide || echo "No pods found"
           kubectl get deployment itam-app || echo "Deployment not found"
+          
+          # Patch deployment to add nodeSelector for worker nodes
+          echo "Adding nodeSelector to ensure pods schedule on worker nodes..."
+          kubectl patch deployment itam-app -p '{"spec":{"template":{"spec":{"nodeSelector":{"node-type":"worker"}}}}}' || echo "Failed to patch deployment"
+          
+          echo "Waiting for pods to reschedule on worker nodes..."
+          sleep 20
+          
+          echo "=== Final pod distribution ==="
+          kubectl get pods -l app=itam-app -o wide
 
       - name: Verify deployment and health endpoint
         run: |
