@@ -47,9 +47,9 @@ Architecture Evolution of the Project:
         - :page_facing_up: *`stock_by_categoeirs.html`*
     - :page_facing_up: *`app.py`* main application file
     - :page_facing_up: *`storage.py`* storage file for operating with persistent storage
-- :page_facing_up: *`docker`* folder contains Docker deployment data
+- :file_folder: *`docker`* folder contains Docker deployment data
     - :page_facing_up: *`Dockerfile`* configuration file for Docker environment
-- :page_facing_up: *`iac`* folder contains IaC deployment data
+- :file_folder: *`iac`* folder contains IaC deployment data
     - :file_folder: *`scripts`* subfolder contains user data scripts for control plane and workers deployment
         - :page_facing_up: *`user-data-control-plane.sh`*
         - :page_facing_up: *`user-data-worker.sh`*
