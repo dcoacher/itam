@@ -187,17 +187,74 @@ jobs:
             aws ec2 delete-key-pair --key-name itam-keypair --region us-east-1 2>/dev/null || echo "Could not delete key pair (may need manual deletion)"
           fi
 
+      - name: Handle stuck resources (if any)
+        working-directory: iac/terraform
+        continue-on-error: true
+        run: |
+          echo "Checking for stuck resources that might block Terraform apply..."
+          
+          # Check if target group exists and is stuck
+          TG_ARN=$(aws elbv2 describe-target-groups --names itam-tg --region us-east-1 --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+          if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+            echo "Target group found: $TG_ARN"
+            
+            # Get ALB ARN
+            ALB_ARN=$(aws elbv2 describe-load-balancers --names itam-alb --region us-east-1 --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
+            
+            if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+              # Get listener ARN and check if target group is attached
+              LISTENER_ARN=$(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --region us-east-1 --query 'Listeners[0].ListenerArn' --output text 2>/dev/null || echo "")
+              
+              if [ -n "$LISTENER_ARN" ] && [ "$LISTENER_ARN" != "None" ]; then
+                # Check if listener uses this target group
+                LISTENER_TG=$(aws elbv2 describe-listeners --listener-arns "$LISTENER_ARN" --region us-east-1 --query 'Listeners[0].DefaultActions[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+                
+                if [ "$LISTENER_TG" == "$TG_ARN" ]; then
+                  echo "Target group is attached to listener. Removing attachment to allow deletion..."
+                  # Delete the listener (it will be recreated by Terraform)
+                  aws elbv2 delete-listener --listener-arn "$LISTENER_ARN" --region us-east-1 2>/dev/null || echo "Could not delete listener (may not be necessary)"
+                fi
+              fi
+              
+              # Deregister all targets from target group
+              echo "Deregistering all targets from target group..."
+              TARGETS=$(aws elbv2 describe-target-health --target-group-arn "$TG_ARN" --region us-east-1 --query 'TargetHealthDescriptions[*].Target.Id' --output text 2>/dev/null || echo "")
+              if [ -n "$TARGETS" ] && [ "$TARGETS" != "None" ]; then
+                for TARGET in $TARGETS; do
+                  if [ -n "$TARGET" ] && [ "$TARGET" != "None" ]; then
+                    echo "Deregistering target: $TARGET"
+                    aws elbv2 deregister-targets --target-group-arn "$TG_ARN" --targets Id="$TARGET" --region us-east-1 2>/dev/null || echo "Could not deregister target $TARGET"
+                  fi
+                done
+                # Wait a moment for deregistration to complete
+                sleep 5
+              fi
+              
+              # Now try to delete the target group if it's not in Terraform state
+              if ! terraform state show aws_lb_target_group.ITAM-TG &>/dev/null 2>&1; then
+                echo "Target group not in Terraform state. Attempting to delete..."
+                aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region us-east-1 2>/dev/null || echo "Could not delete target group (may need to wait or handle manually)"
+              fi
+            fi
+          fi
+
       - name: Terraform Apply
         working-directory: iac/terraform
+        timeout-minutes: 30
         run: |
           if [ "${{ steps.terraform-plan.outputs.has_changes }}" == "true" ]; then
             echo "Applying Terraform changes..."
+            # Set timeout for apply operation (30 minutes total, but individual resource operations have their own timeouts)
             # If apply fails due to existing resources, try to import and retry
-            if ! terraform apply -auto-approve tfplan 2>&1 | tee /tmp/terraform-apply.log; then
-              if grep -q "already exists" /tmp/terraform-apply.log; then
+            if ! timeout 1800 terraform apply -auto-approve tfplan 2>&1 | tee /tmp/terraform-apply.log; then
+              APPLY_EXIT_CODE=${PIPESTATUS[0]}
+              if [ $APPLY_EXIT_CODE -eq 124 ]; then
+                echo "ERROR: Terraform apply timed out after 30 minutes"
+                echo "This usually means a resource is stuck (e.g., target group being destroyed)"
+                echo "Check AWS Console for stuck resources and manually resolve if needed"
+                exit 1
+              elif grep -q "already exists" /tmp/terraform-apply.log; then
                 echo "Resources already exist. Attempting to import and retry..."
-                # Import logic would go here, but we already did it in previous step
-                # Just refresh and try again
                 terraform refresh
                 terraform apply -auto-approve tfplan
               else
