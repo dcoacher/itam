@@ -1291,18 +1291,26 @@ jobs:
           kubectl get pods -l app=itam-app -o wide || echo "No pods found"
           kubectl get deployment itam-app || echo "Deployment not found"
           
-          # If pods are on control plane, delete them to force rescheduling (taint should prevent them from going back)
+          # If pods are on control plane, delete them and patch deployment to ensure they don't go back
           echo "Checking if any pods are on control plane..."
           PODS_ON_CP=$(kubectl get pods -l app=itam-app -o wide --no-headers 2>/dev/null | grep "k8s-controller" | awk '{print $1}' || echo "")
           if [ -n "$PODS_ON_CP" ]; then
-            echo "Found pods on control plane (shouldn't happen with taint), deleting them..."
+            echo "⚠ Found pods on control plane! This shouldn't happen."
+            echo "Deleting pods and ensuring deployment excludes control plane..."
+            
+            # Delete pods on control plane
             echo "$PODS_ON_CP" | while read -r pod; do
               if [ -n "$pod" ]; then
                 kubectl delete pod "$pod" --grace-period=0 --force 2>/dev/null || true
               fi
             done
+            
+            # Ensure deployment has nodeAffinity to exclude control plane
+            echo "Adding nodeAffinity to deployment to exclude control plane..."
+            kubectl patch deployment itam-app -p '{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"node-role.kubernetes.io/control-plane","operator":"DoesNotExist"},{"key":"node-role.kubernetes.io/master","operator":"DoesNotExist"}]}]}}}}}}}}' || echo "Failed to patch deployment"
+            
             echo "Waiting for pods to reschedule on worker nodes..."
-            sleep 15
+            sleep 20
           fi
           
           echo ""
