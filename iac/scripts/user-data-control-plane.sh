@@ -270,8 +270,6 @@ spec:
       labels:
         app: {{ .Chart.Name }}
     spec:
-      nodeSelector:
-        node-role.kubernetes.io/worker: "true"
       containers:
       - name: {{ .Chart.Name }}
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}

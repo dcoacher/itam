@@ -1265,28 +1265,19 @@ jobs:
           IMAGE_REPO="${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}"
           IMAGE_TAG="${{ env.DOCKER_TAG }}"
           
-          echo "Ensuring control plane has taint and labeling worker nodes..."
+          echo "Ensuring control plane has taint and removing tolerations..."
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
-            # Check if taint exists, if not add it
-            if ! kubectl get nodes k8s-controller -o jsonpath='{.spec.taints}' | grep -q "node-role.kubernetes.io/control-plane"; then
-              echo "Adding taint to control plane to prevent pod scheduling..."
-              kubectl taint nodes k8s-controller node-role.kubernetes.io/control-plane:NoSchedule --overwrite || \
-              kubectl taint nodes k8s-controller node-role.kubernetes.io/master:NoSchedule --overwrite || true
-            else
-              echo "Control plane taint already exists"
+            # Ensure control plane has taint (this prevents pods from scheduling there)
+            echo "Adding taint to control plane..."
+            kubectl taint nodes k8s-controller node-role.kubernetes.io/control-plane:NoSchedule --overwrite 2>/dev/null || \
+            kubectl taint nodes k8s-controller node-role.kubernetes.io/master:NoSchedule --overwrite 2>/dev/null || \
+            echo "Taint already exists"
+            
+            # Remove tolerations from existing deployment (if it exists)
+            if kubectl get deployment itam-app &>/dev/null; then
+              echo "Removing tolerations from existing deployment..."
+              kubectl patch deployment itam-app -p '{"spec":{"template":{"spec":{"tolerations":[]}}}}' 2>/dev/null || true
             fi
-            
-            # Label worker nodes so we can use nodeSelector
-            echo "Labeling worker nodes..."
-            for node in \$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-              if [ "\$node" != "k8s-controller" ]; then
-                echo "Labeling worker node: \$node"
-                kubectl label node "\$node" node-role.kubernetes.io/worker=true --overwrite || true
-              fi
-            done
-            
-            echo "Current node labels:"
-            kubectl get nodes --show-labels
           ENDSSH
           
           echo "Deploying with image: $IMAGE_REPO:$IMAGE_TAG"
@@ -1295,52 +1286,12 @@ jobs:
             ./deploy.sh "$IMAGE_REPO" "$IMAGE_TAG"
           ENDSSH
           
-          echo "Ensuring deployment uses nodeSelector for worker nodes..."
+          echo "Removing tolerations and nodeSelector from deployment after Helm install..."
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
-            # Patch the deployment to add nodeSelector if it doesn't exist
-            echo "Checking current deployment spec..."
-            if ! kubectl get deployment itam-app -o jsonpath='{.spec.template.spec.nodeSelector}' | grep -q "worker"; then
-              echo "Adding nodeSelector to deployment..."
-              kubectl patch deployment itam-app -p '{"spec":{"template":{"spec":{"nodeSelector":{"node-role.kubernetes.io/worker":"true"}}}}}' || echo "Patch failed, may need to update manually"
-              echo "Waiting for deployment to update..."
-              sleep 10
-            else
-              echo "nodeSelector already exists in deployment"
-            fi
-          ENDSSH
-          
-          echo "Verifying pods are scheduled on worker nodes..."
-          sleep 15
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
-            echo "Current node labels:"
-            kubectl get nodes --show-labels
-            echo ""
-            echo "Current pod distribution:"
-            kubectl get pods -l app=itam-app -o wide
-            echo ""
-            echo "Checking node distribution..."
-            PODS_ON_CONTROL=$(kubectl get pods -l app=itam-app -o wide --no-headers | grep k8s-controller | wc -l || echo "0")
-            if [ "$PODS_ON_CONTROL" != "0" ]; then
-              echo "⚠ WARNING: $PODS_ON_CONTROL pod(s) are still on control plane"
-              echo "This may cause ALB health check failures"
-              echo ""
-              echo "Deleting pods to force rescheduling on worker nodes..."
-              kubectl delete pods -l app=itam-app --force --grace-period=0 || true
-              echo "Waiting for pods to reschedule on worker nodes..."
-              sleep 30
-              kubectl get pods -l app=itam-app -o wide
-              
-              # Check again
-              PODS_ON_CONTROL=$(kubectl get pods -l app=itam-app -o wide --no-headers | grep k8s-controller | wc -l || echo "0")
-              if [ "$PODS_ON_CONTROL" != "0" ]; then
-                echo "⚠ ERROR: Pods are still on control plane after rescheduling"
-                echo "This indicates the nodeSelector is not working or worker nodes are not labeled"
-              else
-                echo "✓ Pods successfully rescheduled to worker nodes"
-              fi
-            else
-              echo "✓ All pods are on worker nodes"
-            fi
+            # Remove tolerations and nodeSelector so pods can schedule on any node (except tainted control plane)
+            kubectl patch deployment itam-app -p '{"spec":{"template":{"spec":{"tolerations":[],"nodeSelector":null}}}}' 2>/dev/null || true
+            echo "Waiting for pods to reschedule on worker nodes..."
+            sleep 10
           ENDSSH
 
       - name: Wait for deployment rollout to complete
