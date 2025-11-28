@@ -197,6 +197,21 @@ jobs:
             terraform import aws_lb_target_group.ITAM-TG "$TG_ARN" || echo "Target Group import failed"
           fi
           
+          # Import Target Group Attachments (if instances are already in state)
+          if [ -n "$WORKER1_ID" ] && [ "$WORKER1_ID" != "None" ] && terraform state show aws_instance.WORKER-1 &>/dev/null 2>&1 && [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+            if ! terraform state show aws_lb_target_group_attachment.WORKER-1 &>/dev/null 2>&1; then
+              echo "Importing Target Group Attachment for Worker 1..."
+              terraform import aws_lb_target_group_attachment.WORKER-1 "${TG_ARN}/${WORKER1_ID}:31415" || echo "Worker 1 attachment import failed"
+            fi
+          fi
+          
+          if [ -n "$WORKER2_ID" ] && [ "$WORKER2_ID" != "None" ] && terraform state show aws_instance.WORKER-2 &>/dev/null 2>&1 && [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+            if ! terraform state show aws_lb_target_group_attachment.WORKER-2 &>/dev/null 2>&1; then
+              echo "Importing Target Group Attachment for Worker 2..."
+              terraform import aws_lb_target_group_attachment.WORKER-2 "${TG_ARN}/${WORKER2_ID}:31415" || echo "Worker 2 attachment import failed"
+            fi
+          fi
+          
           echo "Import step completed. Running terraform refresh to sync state..."
           terraform refresh -auto-approve || echo "Refresh completed"
 
@@ -357,6 +372,60 @@ jobs:
             else
               echo "Control plane IP not available yet, Terraform will wait for instance to be ready"
             fi
+          fi
+
+      - name: Ensure Target Group Attachments
+        working-directory: iac/terraform
+        continue-on-error: true
+        if: steps.terraform-plan.outputs.has_changes != 'true'
+        run: |
+          echo "Ensuring worker nodes are registered in the target group..."
+          
+          # Get target group ARN
+          TG_ARN=$(aws elbv2 describe-target-groups --names itam-tg --region us-east-1 --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+          if [ -z "$TG_ARN" ] || [ "$TG_ARN" == "None" ]; then
+            echo "Target group not found. Skipping target registration."
+            exit 0
+          fi
+          
+          # Get worker instance IDs from Terraform state
+          WORKER1_ID=$(terraform state show aws_instance.WORKER-1 2>/dev/null | grep "id " | head -1 | awk '{print $3}' | tr -d '"' || echo "")
+          WORKER2_ID=$(terraform state show aws_instance.WORKER-2 2>/dev/null | grep "id " | head -1 | awk '{print $3}' | tr -d '"' || echo "")
+          
+          # Check current targets in the target group
+          CURRENT_TARGETS=$(aws elbv2 describe-target-health --target-group-arn "$TG_ARN" --region us-east-1 --query 'TargetHealthDescriptions[*].Target.Id' --output text 2>/dev/null || echo "")
+          
+          # Register Worker 1 if not already registered
+          if [ -n "$WORKER1_ID" ] && [ "$WORKER1_ID" != "" ] && ! echo "$CURRENT_TARGETS" | grep -q "$WORKER1_ID"; then
+            echo "Registering Worker 1 ($WORKER1_ID) in target group..."
+            aws elbv2 register-targets \
+              --target-group-arn "$TG_ARN" \
+              --targets Id="$WORKER1_ID",Port=31415 \
+              --region us-east-1 && echo "✓ Worker 1 registered" || echo "✗ Failed to register Worker 1"
+          else
+            echo "Worker 1 already registered or not found"
+          fi
+          
+          # Register Worker 2 if not already registered
+          if [ -n "$WORKER2_ID" ] && [ "$WORKER2_ID" != "" ] && ! echo "$CURRENT_TARGETS" | grep -q "$WORKER2_ID"; then
+            echo "Registering Worker 2 ($WORKER2_ID) in target group..."
+            aws elbv2 register-targets \
+              --target-group-arn "$TG_ARN" \
+              --targets Id="$WORKER2_ID",Port=31415 \
+              --region us-east-1 && echo "✓ Worker 2 registered" || echo "✗ Failed to register Worker 2"
+          else
+            echo "Worker 2 already registered or not found"
+          fi
+          
+          # Also ensure Terraform state has the attachments
+          if [ -n "$WORKER1_ID" ] && [ "$WORKER1_ID" != "" ] && ! terraform state show aws_lb_target_group_attachment.WORKER-1 &>/dev/null 2>&1; then
+            echo "Adding Worker 1 attachment to Terraform state..."
+            terraform import aws_lb_target_group_attachment.WORKER-1 "${TG_ARN}/${WORKER1_ID}:31415" 2>/dev/null || echo "Could not import Worker 1 attachment"
+          fi
+          
+          if [ -n "$WORKER2_ID" ] && [ "$WORKER2_ID" != "" ] && ! terraform state show aws_lb_target_group_attachment.WORKER-2 &>/dev/null 2>&1; then
+            echo "Adding Worker 2 attachment to Terraform state..."
+            terraform import aws_lb_target_group_attachment.WORKER-2 "${TG_ARN}/${WORKER2_ID}:31415" 2>/dev/null || echo "Could not import Worker 2 attachment"
           fi
 
       - name: Terraform Apply
