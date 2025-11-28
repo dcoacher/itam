@@ -157,6 +157,24 @@ jobs:
               sleep 10
             done
           done
+          
+          # Wait a bit more for user-data scripts to start
+          echo "Waiting for user-data scripts to initialize..."
+          sleep 30
+
+      - name: Check user-data script progress on control plane
+        run: |
+          CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
+          echo "Checking user-data script status..."
+          # Check if cloud-init is still running
+          CLOUD_INIT_STATUS=$(ssh -i iac/terraform/KP.pem -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo cloud-init status 2>/dev/null || echo 'unknown'" 2>/dev/null || echo "unknown")
+          echo "Cloud-init status: $CLOUD_INIT_STATUS"
+          # Check if kubeadm is installed (indicates user-data is progressing)
+          KUBEADM_INSTALLED=$(ssh -i iac/terraform/KP.pem -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "command -v kubeadm >/dev/null 2>&1 && echo 'yes' || echo 'no'" 2>/dev/null || echo "no")
+          echo "kubeadm installed: $KUBEADM_INSTALLED"
+          # Show recent cloud-init logs
+          echo "Recent cloud-init logs:"
+          ssh -i iac/terraform/KP.pem -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo tail -20 /var/log/cloud-init-output.log" 2>/dev/null || echo "Could not retrieve logs"
 
       - name: Set up SSH keys
         run: |
@@ -174,14 +192,66 @@ jobs:
         run: |
           CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
           echo "Waiting for Kubernetes API server to be ready..."
+          echo "This may take 3-5 minutes after instance startup..."
+          
+          # First, wait for kubeadm init to complete
+          echo "Step 1: Waiting for kubeadm init to complete..."
           for i in {1..60}; do
-            if ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "kubectl --kubeconfig=/etc/kubernetes/admin.conf cluster-info &>/dev/null" 2>/dev/null; then
-              echo "Kubernetes API server is ready"
+            if ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "test -f /etc/kubernetes/admin.conf" 2>/dev/null; then
+              echo "✓ kubeadm init completed (admin.conf exists)"
               break
             fi
-            echo "Waiting... ($i/60 attempts)"
+            if [ $i -eq 60 ]; then
+              echo "ERROR: kubeadm init did not complete after 10 minutes"
+              echo "Checking kubeadm status..."
+              ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo journalctl -u kubelet --no-pager -n 50" || true
+              exit 1
+            fi
+            echo "Waiting for kubeadm init... ($i/60 attempts)"
             sleep 10
           done
+          
+          # Wait for API server pod to be running
+          echo "Step 2: Waiting for API server pod to be running..."
+          for i in {1..60}; do
+            API_STATUS=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo crictl ps --name kube-apiserver --state Running 2>/dev/null | grep -c kube-apiserver || echo '0'" 2>/dev/null || echo "0")
+            if [ "$API_STATUS" != "0" ]; then
+              echo "✓ API server pod is running"
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "ERROR: API server pod not running after 10 minutes"
+              echo "Checking pod status..."
+              ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo crictl ps -a | grep kube-apiserver" || true
+              ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo journalctl -u kubelet --no-pager -n 50" || true
+              exit 1
+            fi
+            echo "Waiting for API server pod... ($i/60 attempts)"
+            sleep 10
+          done
+          
+          # Wait for API server to respond
+          echo "Step 3: Waiting for API server to respond..."
+          for i in {1..60}; do
+            if ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "kubectl --kubeconfig=/etc/kubernetes/admin.conf cluster-info &>/dev/null" 2>/dev/null; then
+              echo "✓ Kubernetes API server is ready and responding"
+              # Show cluster info
+              ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "kubectl --kubeconfig=/etc/kubernetes/admin.conf cluster-info" || true
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "ERROR: API server not responding after 10 minutes"
+              echo "Checking API server logs..."
+              ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo crictl logs \$(sudo crictl ps --name kube-apiserver -q | head -1) --tail 50" 2>/dev/null || true
+              echo "Checking kubelet status..."
+              ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo systemctl status kubelet --no-pager -l" || true
+              exit 1
+            fi
+            echo "Waiting for API server response... ($i/60 attempts)"
+            sleep 10
+          done
+          
+          echo "✓ Kubernetes control plane is fully ready"
 
       - name: Get join command from control plane
         id: join-command
