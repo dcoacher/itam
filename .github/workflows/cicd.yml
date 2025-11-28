@@ -155,12 +155,55 @@ jobs:
             echo "outputs_exist=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Import existing resources into Terraform state (if needed)
+        working-directory: iac/terraform
+        continue-on-error: true
+        run: |
+          echo "Checking for existing resources that need to be imported..."
+          
+          # Check if ALB exists in AWS but not in state
+          ALB_ARN=$(aws elbv2 describe-load-balancers --names itam-alb --region us-east-1 --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
+          if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && ! terraform state show aws_lb.ITAM-ALB &>/dev/null 2>&1; then
+            echo "Importing existing ALB into Terraform state..."
+            terraform import aws_lb.ITAM-ALB "$ALB_ARN" || echo "ALB import failed or already in state"
+          fi
+          
+          # Check if Target Group exists in AWS but not in state
+          TG_ARN=$(aws elbv2 describe-target-groups --names itam-tg --region us-east-1 --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+          if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ] && ! terraform state show aws_lb_target_group.ITAM-TG &>/dev/null 2>&1; then
+            echo "Importing existing Target Group into Terraform state..."
+            terraform import aws_lb_target_group.ITAM-TG "$TG_ARN" || echo "Target Group import failed or already in state"
+          fi
+          
+          # Check if Key Pair exists in AWS but not in state
+          # Note: Key pairs with different public keys cannot be imported
+          # If key pair exists, we'll need to either delete it or use terraform taint to force recreation
+          if aws ec2 describe-key-pairs --key-names itam-keypair --region us-east-1 &>/dev/null 2>&1 && ! terraform state show aws_key_pair.ITAM-KP &>/dev/null 2>&1; then
+            echo "WARNING: Key pair 'itam-keypair' exists in AWS but not in Terraform state."
+            echo "The key pair will be recreated with a new key. If this causes issues:"
+            echo "1. Delete the existing key pair from AWS Console: aws ec2 delete-key-pair --key-name itam-keypair --region us-east-1"
+            echo "2. Or manually import it if the public key matches"
+            echo "Attempting to delete existing key pair to allow recreation..."
+            aws ec2 delete-key-pair --key-name itam-keypair --region us-east-1 2>/dev/null || echo "Could not delete key pair (may need manual deletion)"
+          fi
+
       - name: Terraform Apply
         working-directory: iac/terraform
         run: |
           if [ "${{ steps.terraform-plan.outputs.has_changes }}" == "true" ]; then
             echo "Applying Terraform changes..."
-            terraform apply -auto-approve tfplan
+            # If apply fails due to existing resources, try to import and retry
+            if ! terraform apply -auto-approve tfplan 2>&1 | tee /tmp/terraform-apply.log; then
+              if grep -q "already exists" /tmp/terraform-apply.log; then
+                echo "Resources already exist. Attempting to import and retry..."
+                # Import logic would go here, but we already did it in previous step
+                # Just refresh and try again
+                terraform refresh
+                terraform apply -auto-approve tfplan
+              else
+                exit 1
+              fi
+            fi
           elif [ "${{ steps.check-outputs.outputs.outputs_exist }}" != "true" ]; then
             echo "No changes detected, but public IP outputs are missing or null."
             echo "Running terraform apply to refresh state and populate outputs..."
