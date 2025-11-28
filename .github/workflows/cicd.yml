@@ -114,6 +114,92 @@ jobs:
         working-directory: iac/terraform
         run: terraform init
 
+      - name: Check if infrastructure exists in AWS and import (BEFORE plan)
+        working-directory: iac/terraform
+        continue-on-error: true
+        run: |
+          echo "Checking if infrastructure already exists in AWS..."
+          echo "This step imports existing resources into Terraform state to prevent duplicates"
+          
+          # Get VPC ID first (needed for other resources)
+          VPC_ID=$(aws ec2 describe-vpcs --filters 'Name=tag:Name,Values=itam-vpc' --query 'Vpcs[0].VpcId' --output text --region us-east-1 2>/dev/null || echo "")
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" == "None" ]; then
+            echo "VPC not found in AWS. This appears to be a fresh deployment."
+            echo "infrastructure_exists_in_aws=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Found VPC: $VPC_ID"
+          echo "infrastructure_exists_in_aws=true" >> $GITHUB_OUTPUT
+          
+          # Import VPC if not in state
+          if ! terraform state show aws_vpc.ITAM-VPC &>/dev/null 2>&1; then
+            echo "Importing VPC into Terraform state..."
+            terraform import aws_vpc.ITAM-VPC "$VPC_ID" || echo "VPC import failed or already in state"
+          fi
+          
+          # Import subnets
+          SUBNET1_ID=$(aws ec2 describe-subnets --filters "Name=tag:Name,Values=itam-public-subnet-1" "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[0].SubnetId' --output text --region us-east-1 2>/dev/null || echo "")
+          if [ -n "$SUBNET1_ID" ] && [ "$SUBNET1_ID" != "None" ] && ! terraform state show aws_subnet.ITAM-Public-Subnet-1 &>/dev/null 2>&1; then
+            echo "Importing Public Subnet 1..."
+            terraform import aws_subnet.ITAM-Public-Subnet-1 "$SUBNET1_ID" || echo "Subnet 1 import failed"
+          fi
+          
+          SUBNET2_ID=$(aws ec2 describe-subnets --filters "Name=tag:Name,Values=itam-public-subnet-2" "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[0].SubnetId' --output text --region us-east-1 2>/dev/null || echo "")
+          if [ -n "$SUBNET2_ID" ] && [ "$SUBNET2_ID" != "None" ] && ! terraform state show aws_subnet.ITAM-Public-Subnet-2 &>/dev/null 2>&1; then
+            echo "Importing Public Subnet 2..."
+            terraform import aws_subnet.ITAM-Public-Subnet-2 "$SUBNET2_ID" || echo "Subnet 2 import failed"
+          fi
+          
+          # Import security groups
+          ALB_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=itam-alb-sg" "Name=vpc-id,Values=$VPC_ID" --region us-east-1 --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+          if [ -n "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ] && ! terraform state show aws_security_group.ITAM-ALB-SG &>/dev/null 2>&1; then
+            echo "Importing ALB security group..."
+            terraform import aws_security_group.ITAM-ALB-SG "$ALB_SG_ID" || echo "ALB SG import failed"
+          fi
+          
+          EC2_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=itam-ec2-sg" "Name=vpc-id,Values=$VPC_ID" --region us-east-1 --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+          if [ -n "$EC2_SG_ID" ] && [ "$EC2_SG_ID" != "None" ] && ! terraform state show aws_security_group.ITAM-EC2-SG &>/dev/null 2>&1; then
+            echo "Importing EC2 security group..."
+            terraform import aws_security_group.ITAM-EC2-SG "$EC2_SG_ID" || echo "EC2 SG import failed"
+          fi
+          
+          # Import EC2 instances
+          CONTROL_PLANE_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=itam-control-plane" "Name=instance-state-name,Values=running,stopped" --query 'Reservations[0].Instances[0].InstanceId' --output text --region us-east-1 2>/dev/null || echo "")
+          if [ -n "$CONTROL_PLANE_ID" ] && [ "$CONTROL_PLANE_ID" != "None" ] && ! terraform state show aws_instance.CONTROL-PLANE &>/dev/null 2>&1; then
+            echo "Importing Control Plane instance..."
+            terraform import aws_instance.CONTROL-PLANE "$CONTROL_PLANE_ID" || echo "Control Plane import failed"
+          fi
+          
+          WORKER1_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=itam-worker-1" "Name=instance-state-name,Values=running,stopped" --query 'Reservations[0].Instances[0].InstanceId' --output text --region us-east-1 2>/dev/null || echo "")
+          if [ -n "$WORKER1_ID" ] && [ "$WORKER1_ID" != "None" ] && ! terraform state show aws_instance.WORKER-1 &>/dev/null 2>&1; then
+            echo "Importing Worker 1 instance..."
+            terraform import aws_instance.WORKER-1 "$WORKER1_ID" || echo "Worker 1 import failed"
+          fi
+          
+          WORKER2_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=itam-worker-2" "Name=instance-state-name,Values=running,stopped" --query 'Reservations[0].Instances[0].InstanceId' --output text --region us-east-1 2>/dev/null || echo "")
+          if [ -n "$WORKER2_ID" ] && [ "$WORKER2_ID" != "None" ] && ! terraform state show aws_instance.WORKER-2 &>/dev/null 2>&1; then
+            echo "Importing Worker 2 instance..."
+            terraform import aws_instance.WORKER-2 "$WORKER2_ID" || echo "Worker 2 import failed"
+          fi
+          
+          # Import ALB
+          ALB_ARN=$(aws elbv2 describe-load-balancers --names itam-alb --region us-east-1 --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
+          if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && ! terraform state show aws_lb.ITAM-ALB &>/dev/null 2>&1; then
+            echo "Importing ALB..."
+            terraform import aws_lb.ITAM-ALB "$ALB_ARN" || echo "ALB import failed"
+          fi
+          
+          # Import Target Group
+          TG_ARN=$(aws elbv2 describe-target-groups --names itam-tg --region us-east-1 --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+          if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ] && ! terraform state show aws_lb_target_group.ITAM-TG &>/dev/null 2>&1; then
+            echo "Importing Target Group..."
+            terraform import aws_lb_target_group.ITAM-TG "$TG_ARN" || echo "Target Group import failed"
+          fi
+          
+          echo "Import step completed. Running terraform refresh to sync state..."
+          terraform refresh -auto-approve || echo "Refresh completed"
+
       - name: Terraform Plan
         id: terraform-plan
         working-directory: iac/terraform
@@ -155,59 +241,27 @@ jobs:
             echo "outputs_exist=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Import existing resources into Terraform state (if needed)
+      - name: Verify infrastructure state after import
         working-directory: iac/terraform
         continue-on-error: true
         run: |
-          echo "Checking for existing resources that need to be imported..."
+          echo "Verifying that all existing resources are in Terraform state..."
+          echo "This prevents Terraform from trying to create duplicates"
           
-          # Check if security groups exist and import if needed
-          ALB_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=itam-alb-sg" "Name=vpc-id,Values=$(terraform output -raw VPC_ID 2>/dev/null || aws ec2 describe-vpcs --filters 'Name=tag:Name,Values=itam-vpc' --query 'Vpcs[0].VpcId' --output text --region us-east-1 2>/dev/null || echo '')" --region us-east-1 --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
-          if [ -n "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ] && ! terraform state show aws_security_group.ITAM-ALB-SG &>/dev/null 2>&1; then
-            echo "Importing existing ALB security group into Terraform state..."
-            terraform import aws_security_group.ITAM-ALB-SG "$ALB_SG_ID" || echo "ALB security group import failed or already in state"
-          fi
-          
-          EC2_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=itam-ec2-sg" "Name=vpc-id,Values=$(terraform output -raw VPC_ID 2>/dev/null || aws ec2 describe-vpcs --filters 'Name=tag:Name,Values=itam-vpc' --query 'Vpcs[0].VpcId' --output text --region us-east-1 2>/dev/null || echo '')" --region us-east-1 --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
-          if [ -n "$EC2_SG_ID" ] && [ "$EC2_SG_ID" != "None" ] && ! terraform state show aws_security_group.ITAM-EC2-SG &>/dev/null 2>&1; then
-            echo "Importing existing EC2 security group into Terraform state..."
-            terraform import aws_security_group.ITAM-EC2-SG "$EC2_SG_ID" || echo "EC2 security group import failed or already in state"
-          fi
-          
-          # Check if ALB exists in AWS but not in state
-          ALB_ARN=$(aws elbv2 describe-load-balancers --names itam-alb --region us-east-1 --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
-          if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && ! terraform state show aws_lb.ITAM-ALB &>/dev/null 2>&1; then
-            echo "Importing existing ALB into Terraform state..."
-            terraform import aws_lb.ITAM-ALB "$ALB_ARN" || echo "ALB import failed or already in state"
-          elif [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
-            # ALB exists in state, check if security group is correct
-            echo "ALB exists in state. Verifying security group configuration..."
-            CURRENT_SG=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --region us-east-1 --query 'LoadBalancers[0].SecurityGroups[0]' --output text 2>/dev/null || echo "")
-            EXPECTED_SG=$(terraform state show aws_security_group.ITAM-ALB-SG 2>/dev/null | grep "^\s*id\s*=" | head -1 | awk -F'"' '{print $2}' || echo "")
-            if [ -n "$CURRENT_SG" ] && [ -n "$EXPECTED_SG" ] && [ "$CURRENT_SG" != "$EXPECTED_SG" ]; then
-              echo "WARNING: ALB has different security group ($CURRENT_SG) than expected ($EXPECTED_SG)"
-              echo "Terraform will attempt to update it. If this fails, manually update the ALB security group in AWS Console."
-            fi
-          fi
-          
-          # Check if Target Group exists in AWS but not in state
-          TG_ARN=$(aws elbv2 describe-target-groups --names itam-tg --region us-east-1 --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-          if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ] && ! terraform state show aws_lb_target_group.ITAM-TG &>/dev/null 2>&1; then
-            echo "Importing existing Target Group into Terraform state..."
-            terraform import aws_lb_target_group.ITAM-TG "$TG_ARN" || echo "Target Group import failed or already in state"
-          fi
-          
-          # Check if Key Pair exists in AWS but not in state
-          # Note: Key pairs with different public keys cannot be imported
-          # If key pair exists, we'll need to either delete it or use terraform taint to force recreation
+          # Check key pair (special handling needed)
           if aws ec2 describe-key-pairs --key-names itam-keypair --region us-east-1 &>/dev/null 2>&1 && ! terraform state show aws_key_pair.ITAM-KP &>/dev/null 2>&1; then
             echo "WARNING: Key pair 'itam-keypair' exists in AWS but not in Terraform state."
             echo "The key pair will be recreated with a new key. If this causes issues:"
-            echo "1. Delete the existing key pair from AWS Console: aws ec2 delete-key-pair --key-name itam-keypair --region us-east-1"
+            echo "1. Delete the existing key pair: aws ec2 delete-key-pair --key-name itam-keypair --region us-east-1"
             echo "2. Or manually import it if the public key matches"
             echo "Attempting to delete existing key pair to allow recreation..."
             aws ec2 delete-key-pair --key-name itam-keypair --region us-east-1 2>/dev/null || echo "Could not delete key pair (may need manual deletion)"
           fi
+          
+          # List what's in state vs what exists in AWS
+          echo ""
+          echo "Resources in Terraform state:"
+          terraform state list 2>/dev/null | head -20 || echo "No resources in state"
 
       - name: Handle stuck resources (if any)
         working-directory: iac/terraform
