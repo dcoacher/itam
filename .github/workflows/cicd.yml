@@ -178,110 +178,25 @@ jobs:
           volumeBindingMode: Immediate
           EOF
 
-      - name: Deploy application
+      - name: Set up SSH
         run: |
-          # Check if deployment exists
-          if kubectl get deployment itam-app -n default &>/dev/null; then
-            echo "Deployment exists. Updating image..."
-            kubectl set image deployment/itam-app \
-              itam-app=${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} \
-              -n default
-            kubectl rollout status deployment/itam-app -n default --timeout=5m
-          else
-            echo "Deployment not found. Creating new deployment..."
-            # Create PVC
-            kubectl apply -f - <<'YAML'
-          apiVersion: v1
-          kind: PersistentVolumeClaim
-          metadata:
-            name: itam-app-pvc
-            labels:
-              app: itam-app
-          spec:
-            accessModes:
-              - ReadWriteMany
-            storageClassName: nfs-client
-            resources:
-              requests:
-                storage: 1Gi
-          YAML
-            # Create Deployment
-            kubectl apply -f - <<YAML
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: itam-app
-            labels:
-              app: itam-app
-          spec:
-            replicas: 2
-            selector:
-              matchLabels:
-                app: itam-app
-            template:
-              metadata:
-                labels:
-                  app: itam-app
-              spec:
-                tolerations:
-                - key: node-role.kubernetes.io/control-plane
-                  operator: Exists
-                  effect: NoSchedule
-                - key: node-role.kubernetes.io/master
-                  operator: Exists
-                  effect: NoSchedule
-                containers:
-                - name: itam-app
-                  image: ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
-                  imagePullPolicy: Always
-                  ports:
-                  - containerPort: 31415
-                    name: http
-                  env:
-                  - name: ITAM_DATA_DIR
-                    value: /app/dummy-data
-                  - name: PORT
-                    value: "31415"
-                  - name: FLASK_DEBUG
-                    value: "False"
-                  volumeMounts:
-                  - name: data
-                    mountPath: /app/dummy-data
-                  resources:
-                    requests:
-                      memory: "128Mi"
-                      cpu: "100m"
-                    limits:
-                      memory: "256Mi"
-                      cpu: "200m"
-                volumes:
-                - name: data
-                  persistentVolumeClaim:
-                    claimName: itam-app-pvc
-          YAML
-            # Create Service
-            kubectl apply -f - <<'YAML'
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: itam-app
-            labels:
-              app: itam-app
-          spec:
-            type: NodePort
-            ports:
-            - port: 31415
-              targetPort: http
-              protocol: TCP
-              name: http
-              nodePort: 31415
-            selector:
-              app: itam-app
-          YAML
-            # Wait for deployment to be ready
-            echo "Waiting for deployment to be ready..."
-            kubectl wait --for=condition=available deployment/itam-app -n default --timeout=5m || true
-          fi
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.KUBERNETES_PUBLIC_IP }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          # Test SSH connection
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@${{ secrets.KUBERNETES_PUBLIC_IP }} "echo 'SSH connection successful'"
+
+      - name: Deploy application using deploy.sh
+        run: |
+          set -e
+          IMAGE_REPO="${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}"
+          IMAGE_TAG="${{ env.DOCKER_TAG }}"
+          echo "Deploying with image: $IMAGE_REPO:$IMAGE_TAG"
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@${{ secrets.KUBERNETES_PUBLIC_IP }} <<ENDSSH
+            cd /home/ubuntu/helm
+            ./deploy.sh "$IMAGE_REPO" "$IMAGE_TAG"
+          ENDSSH
 
       - name: Verify deployment
         run: |
