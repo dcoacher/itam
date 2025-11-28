@@ -161,11 +161,33 @@ jobs:
         run: |
           echo "Checking for existing resources that need to be imported..."
           
+          # Check if security groups exist and import if needed
+          ALB_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=itam-alb-sg" "Name=vpc-id,Values=$(terraform output -raw VPC_ID 2>/dev/null || aws ec2 describe-vpcs --filters 'Name=tag:Name,Values=itam-vpc' --query 'Vpcs[0].VpcId' --output text --region us-east-1 2>/dev/null || echo '')" --region us-east-1 --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+          if [ -n "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ] && ! terraform state show aws_security_group.ITAM-ALB-SG &>/dev/null 2>&1; then
+            echo "Importing existing ALB security group into Terraform state..."
+            terraform import aws_security_group.ITAM-ALB-SG "$ALB_SG_ID" || echo "ALB security group import failed or already in state"
+          fi
+          
+          EC2_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=itam-ec2-sg" "Name=vpc-id,Values=$(terraform output -raw VPC_ID 2>/dev/null || aws ec2 describe-vpcs --filters 'Name=tag:Name,Values=itam-vpc' --query 'Vpcs[0].VpcId' --output text --region us-east-1 2>/dev/null || echo '')" --region us-east-1 --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+          if [ -n "$EC2_SG_ID" ] && [ "$EC2_SG_ID" != "None" ] && ! terraform state show aws_security_group.ITAM-EC2-SG &>/dev/null 2>&1; then
+            echo "Importing existing EC2 security group into Terraform state..."
+            terraform import aws_security_group.ITAM-EC2-SG "$EC2_SG_ID" || echo "EC2 security group import failed or already in state"
+          fi
+          
           # Check if ALB exists in AWS but not in state
           ALB_ARN=$(aws elbv2 describe-load-balancers --names itam-alb --region us-east-1 --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
           if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && ! terraform state show aws_lb.ITAM-ALB &>/dev/null 2>&1; then
             echo "Importing existing ALB into Terraform state..."
             terraform import aws_lb.ITAM-ALB "$ALB_ARN" || echo "ALB import failed or already in state"
+          elif [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+            # ALB exists in state, check if security group is correct
+            echo "ALB exists in state. Verifying security group configuration..."
+            CURRENT_SG=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --region us-east-1 --query 'LoadBalancers[0].SecurityGroups[0]' --output text 2>/dev/null || echo "")
+            EXPECTED_SG=$(terraform state show aws_security_group.ITAM-ALB-SG 2>/dev/null | grep "^\s*id\s*=" | head -1 | awk -F'"' '{print $2}' || echo "")
+            if [ -n "$CURRENT_SG" ] && [ -n "$EXPECTED_SG" ] && [ "$CURRENT_SG" != "$EXPECTED_SG" ]; then
+              echo "WARNING: ALB has different security group ($CURRENT_SG) than expected ($EXPECTED_SG)"
+              echo "Terraform will attempt to update it. If this fails, manually update the ALB security group in AWS Console."
+            fi
           fi
           
           # Check if Target Group exists in AWS but not in state
@@ -302,6 +324,37 @@ jobs:
                 echo "Resources already exist. Attempting to import and retry..."
                 terraform refresh
                 terraform apply -auto-approve tfplan
+              elif grep -q "security groups are invalid\|InvalidSecurityGroup" /tmp/terraform-apply.log; then
+                echo "ERROR: Security groups are invalid. Attempting to fix..."
+                # Get VPC ID
+                VPC_ID=$(terraform state show aws_vpc.ITAM-VPC 2>/dev/null | grep "^\s*id\s*=" | head -1 | awk -F'"' '{print $2}' || echo "")
+                if [ -z "$VPC_ID" ]; then
+                  VPC_ID=$(aws ec2 describe-vpcs --filters 'Name=tag:Name,Values=itam-vpc' --query 'Vpcs[0].VpcId' --output text --region us-east-1 2>/dev/null || echo "")
+                fi
+                
+                if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+                  # Check if security groups exist in the correct VPC
+                  ALB_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=itam-alb-sg" "Name=vpc-id,Values=$VPC_ID" --region us-east-1 --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+                  
+                  if [ -n "$ALB_SG_ID" ] && [ "$ALB_SG_ID" != "None" ]; then
+                    echo "Found ALB security group: $ALB_SG_ID"
+                    # Import if not in state
+                    if ! terraform state show aws_security_group.ITAM-ALB-SG &>/dev/null 2>&1; then
+                      echo "Importing ALB security group into state..."
+                      terraform import aws_security_group.ITAM-ALB-SG "$ALB_SG_ID" || echo "Import failed"
+                    fi
+                    # Refresh and retry
+                    terraform refresh
+                    terraform apply -auto-approve tfplan
+                  else
+                    echo "ERROR: ALB security group 'itam-alb-sg' not found in VPC $VPC_ID"
+                    echo "Please create the security group manually or check Terraform configuration"
+                    exit 1
+                  fi
+                else
+                  echo "ERROR: Could not determine VPC ID"
+                  exit 1
+                fi
               else
                 exit 1
               fi
