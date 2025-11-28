@@ -238,6 +238,51 @@ jobs:
             fi
           fi
 
+      - name: Wait for control plane to be SSH-ready (if creating new instances)
+        working-directory: iac/terraform
+        continue-on-error: true
+        run: |
+          # Only wait if we're creating new instances
+          if [ "${{ steps.terraform-plan.outputs.has_changes }}" == "true" ]; then
+            echo "Waiting for control plane instance to be SSH-ready..."
+            # Get control plane IP from state (if instance already exists)
+            CONTROL_PLANE_IP=$(terraform output -raw CONTROL-PLANE-PUBLIC-IP 2>/dev/null | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" || echo "")
+            
+            # If not in state, check AWS directly by instance name
+            if [ -z "$CONTROL_PLANE_IP" ] || [ "$CONTROL_PLANE_IP" == "null" ]; then
+              echo "Control plane IP not in state yet, checking AWS for running instance..."
+              CONTROL_PLANE_IP=$(aws ec2 describe-instances \
+                --filters "Name=tag:Name,Values=itam-control-plane" "Name=instance-state-name,Values=running" \
+                --query 'Reservations[0].Instances[0].PublicIpAddress' \
+                --output text --region us-east-1 2>/dev/null | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" || echo "")
+            fi
+            
+            if [ -n "$CONTROL_PLANE_IP" ] && [ "$CONTROL_PLANE_IP" != "null" ] && [ "$CONTROL_PLANE_IP" != "None" ]; then
+              echo "Waiting for SSH access to control plane at $CONTROL_PLANE_IP..."
+              SSH_KEY_PATH="KP.pem"
+              if [ ! -f "$SSH_KEY_PATH" ]; then
+                echo "SSH key not found at $SSH_KEY_PATH, skipping SSH readiness check"
+                exit 0
+              fi
+              
+              for i in {1..30}; do
+                if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i "$SSH_KEY_PATH" ubuntu@$CONTROL_PLANE_IP "echo 'SSH ready'" 2>/dev/null; then
+                  echo "✓ Control plane is SSH-ready"
+                  break
+                fi
+                if [ $i -eq 30 ]; then
+                  echo "⚠ Control plane not SSH-ready after 5 minutes, but continuing..."
+                  echo "Terraform will retry with its own timeout settings"
+                else
+                  echo "Waiting for SSH... ($i/30 attempts)"
+                  sleep 10
+                fi
+              done
+            else
+              echo "Control plane IP not available yet, Terraform will wait for instance to be ready"
+            fi
+          fi
+
       - name: Terraform Apply
         working-directory: iac/terraform
         timeout-minutes: 30

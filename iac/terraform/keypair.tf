@@ -41,6 +41,7 @@ resource "terraform_data" "KP-Copy" {
     user        = "ubuntu"
     private_key = tls_private_key.ITAM-KP.private_key_pem
     host        = aws_instance.CONTROL-PLANE.public_ip
+    timeout     = "5m"
   }
 
   provisioner "remote-exec" {
