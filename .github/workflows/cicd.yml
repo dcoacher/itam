@@ -540,13 +540,14 @@ jobs:
 
       - name: Wait for EC2 instances to be ready
         timeout-minutes: 10
+        if: steps.terraform-plan.outputs.has_changes == 'true'
         run: |
           CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
           WORKER1_IP="${{ steps.terraform-output.outputs.worker1_ip }}"
           WORKER2_IP="${{ steps.terraform-output.outputs.worker2_ip }}"
           SSH_KEY_PATH="iac/terraform/KP.pem"
           
-          echo "Waiting for instances to be SSH-ready..."
+          echo "New infrastructure was created. Waiting for instances to be SSH-ready..."
           echo "Control Plane: $CONTROL_PLANE_IP"
           echo "Worker 1: $WORKER1_IP"
           echo "Worker 2: $WORKER2_IP"
@@ -704,9 +705,10 @@ jobs:
           sleep 30
 
       - name: Check user-data script progress on control plane
+        if: steps.terraform-plan.outputs.has_changes == 'true'
         run: |
           CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
-          echo "Checking user-data script status..."
+          echo "New infrastructure detected. Checking user-data script status..."
           # Check if cloud-init is still running
           CLOUD_INIT_STATUS=$(ssh -i iac/terraform/KP.pem -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo cloud-init status 2>/dev/null || echo 'unknown'" 2>/dev/null || echo "unknown")
           echo "Cloud-init status: $CLOUD_INIT_STATUS"
@@ -716,6 +718,30 @@ jobs:
           # Show recent cloud-init logs
           echo "Recent cloud-init logs:"
           ssh -i iac/terraform/KP.pem -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "sudo tail -20 /var/log/cloud-init-output.log" 2>/dev/null || echo "Could not retrieve logs"
+
+      - name: Verify existing infrastructure is ready (skip if new infrastructure)
+        if: steps.terraform-plan.outputs.has_changes != 'true'
+        run: |
+          CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
+          echo "Using existing infrastructure. Verifying it's still running..."
+          SSH_KEY_PATH="iac/terraform/KP.pem"
+          
+          # Quick SSH check (should be instant if infrastructure is running)
+          if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i "$SSH_KEY_PATH" ubuntu@$CONTROL_PLANE_IP "echo 'ready'" 2>/dev/null; then
+            echo "✓ Existing infrastructure is accessible"
+          else
+            echo "⚠ WARNING: Existing infrastructure is not accessible via SSH"
+            echo "This may indicate instances were stopped or terminated."
+            echo "The workflow will continue, but deployment may fail."
+          fi
+          
+          # Quick Kubernetes check
+          if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i "$SSH_KEY_PATH" ubuntu@$CONTROL_PLANE_IP "kubectl --kubeconfig=/home/ubuntu/.kube/config cluster-info &>/dev/null" 2>/dev/null; then
+            echo "✓ Kubernetes cluster is accessible"
+          else
+            echo "⚠ WARNING: Kubernetes cluster is not accessible"
+            echo "This may indicate the cluster needs to be restarted."
+          fi
 
       - name: Set up SSH keys
         run: |
@@ -730,9 +756,10 @@ jobs:
           ssh-keyscan -H $WORKER2_IP >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Wait for Kubernetes control plane to be ready
+        if: steps.terraform-plan.outputs.has_changes == 'true'
         run: |
           CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
-          echo "Waiting for Kubernetes API server to be ready..."
+          echo "New infrastructure detected. Waiting for Kubernetes API server to be ready..."
           echo "This may take 3-5 minutes after instance startup..."
           
           # First, wait for kubeadm init to complete
@@ -796,6 +823,7 @@ jobs:
 
       - name: Get join command from control plane
         id: join-command
+        if: steps.terraform-plan.outputs.has_changes == 'true'
         run: |
           CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
           JOIN_CMD=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "cat /home/ubuntu/join-command.sh")
@@ -804,9 +832,11 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Rename and join worker 1
+        if: steps.terraform-plan.outputs.has_changes == 'true'
         run: |
           WORKER1_IP="${{ steps.terraform-output.outputs.worker1_ip }}"
           JOIN_CMD="${{ steps.join-command.outputs.join_command }}"
+          echo "New infrastructure detected. Joining worker 1 to cluster..."
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$WORKER1_IP <<ENDSSH
             set -e
             INSTANCE_ID=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
@@ -816,9 +846,11 @@ jobs:
           ENDSSH
 
       - name: Rename and join worker 2
+        if: steps.terraform-plan.outputs.has_changes == 'true'
         run: |
           WORKER2_IP="${{ steps.terraform-output.outputs.worker2_ip }}"
           JOIN_CMD="${{ steps.join-command.outputs.join_command }}"
+          echo "New infrastructure detected. Joining worker 2 to cluster..."
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$WORKER2_IP <<ENDSSH
             set -e
             INSTANCE_ID=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
@@ -828,9 +860,10 @@ jobs:
           ENDSSH
 
       - name: Wait for all nodes to be ready
+        if: steps.terraform-plan.outputs.has_changes == 'true'
         run: |
           CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
-          echo "Waiting for all nodes to join the cluster..."
+          echo "New infrastructure detected. Waiting for all nodes to join the cluster..."
           for i in {1..30}; do
             NODE_COUNT=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "kubectl --kubeconfig=/home/ubuntu/.kube/config get nodes --no-headers 2>/dev/null | wc -l" || echo "0")
             READY_COUNT=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "kubectl --kubeconfig=/home/ubuntu/.kube/config get nodes --no-headers 2>/dev/null | grep -c Ready || echo '0'")
