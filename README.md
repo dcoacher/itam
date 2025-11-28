@@ -43,6 +43,7 @@ Architecture Evolution of the Project:
     - :page_facing_up: *`app.py`* main application file
     - :page_facing_up: *`storage.py`* storage file for operating with persistent storage
 - :page_facing_up: *`docker`* folder contains Docker deployment data
+    - :page_facing_up: *`docker-build-push.sh`* Docker build push to Docker Hub script
     - :page_facing_up: *`Dockerfile`* configuration file for Docker environment
 - :page_facing_up: *`iac`* folder contains IaC deployment data
     - :file_folder: *`scripts`* subfolder contains user data scripts for control plane and workers deployment
