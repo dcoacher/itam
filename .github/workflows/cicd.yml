@@ -608,6 +608,25 @@ jobs:
             echo "⚠ KP.pem not found, skipping Secrets Manager storage"
           fi
 
+      - name: Store SSH key on control plane (if infrastructure was created)
+        continue-on-error: true
+        if: steps.terraform-plan.outputs.has_changes != 'true'
+        run: |
+          CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
+          if [ -n "$CONTROL_PLANE_IP" ] && [ -f "iac/terraform/KP.pem" ]; then
+            echo "Storing SSH key on control plane for future retrieval..."
+            # Wait for SSH to be ready
+            for i in {1..30}; do
+              if ssh -i iac/terraform/KP.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@$CONTROL_PLANE_IP "echo 'SSH ready'" 2>/dev/null; then
+                echo "SSH is ready. Copying key to control plane..."
+                scp -i iac/terraform/KP.pem -o StrictHostKeyChecking=no iac/terraform/KP.pem ubuntu@$CONTROL_PLANE_IP:/home/ubuntu/.ssh/kp_backup.pem 2>/dev/null && \
+                ssh -i iac/terraform/KP.pem -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "chmod 600 /home/ubuntu/.ssh/kp_backup.pem" 2>/dev/null && \
+                echo "✓ SSH key stored on control plane" && break || echo "Attempt $i/30 failed, retrying..."
+              fi
+              sleep 5
+            done
+          fi
+
       - name: Prepare SSH key output (base64 encoded)
         id: ssh-key-output
         continue-on-error: true
@@ -1184,9 +1203,186 @@ jobs:
             echo "  3. State file is not accessible (backend not configured)"
           fi
           
+          # Method 5: Retrieve from control plane via AWS Systems Manager (SSM)
+          echo ""
+          echo "Method 5: Attempting to retrieve SSH key from control plane via AWS SSM..."
+          CONTROL_PLANE_IP="${{ needs.infrastructure.outputs.control_plane_ip }}"
+          
+          if [ -n "$CONTROL_PLANE_IP" ] && [ "$CONTROL_PLANE_IP" != "" ]; then
+            echo "Control plane IP: $CONTROL_PLANE_IP"
+            
+            # Get instance ID from IP
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --filters "Name=ip-address,Values=$CONTROL_PLANE_IP" \
+                        "Name=instance-state-name,Values=running" \
+              --query 'Reservations[0].Instances[0].InstanceId' \
+              --output text \
+              --region "${{ secrets.AWS_REGION || 'us-east-1' }}" 2>/dev/null || echo "")
+            
+            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "" ]; then
+              echo "Found instance ID: $INSTANCE_ID"
+              
+              # Try to retrieve key from a file on the control plane (if we stored it there)
+              echo "Attempting to retrieve key from control plane..."
+              SSM_OUTPUT=$(aws ssm send-command \
+                --instance-ids "$INSTANCE_ID" \
+                --document-name "AWS-RunShellScript" \
+                --parameters 'commands=["if [ -f /home/ubuntu/.ssh/kp_backup.pem ]; then cat /home/ubuntu/.ssh/kp_backup.pem; elif [ -f /tmp/kp.pem ]; then cat /tmp/kp.pem; else echo \"NOT_FOUND\"; fi"]' \
+                --region "${{ secrets.AWS_REGION || 'us-east-1' }}" \
+                --output json 2>/dev/null || echo "")
+              
+              if [ -n "$SSM_OUTPUT" ]; then
+                COMMAND_ID=$(echo "$SSM_OUTPUT" | grep -o '"CommandId": "[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+                if [ -n "$COMMAND_ID" ]; then
+                  echo "SSM command sent. Waiting for result..."
+                  sleep 5
+                  
+                  # Get command output
+                  for i in {1..10}; do
+                    COMMAND_OUTPUT=$(aws ssm get-command-invocation \
+                      --command-id "$COMMAND_ID" \
+                      --instance-id "$INSTANCE_ID" \
+                      --region "${{ secrets.AWS_REGION || 'us-east-1' }}" \
+                      --query 'StandardOutputContent' \
+                      --output text 2>/dev/null || echo "")
+                    
+                    if [ -n "$COMMAND_OUTPUT" ] && [ "$COMMAND_OUTPUT" != "None" ] && [ "$COMMAND_OUTPUT" != "NOT_FOUND" ]; then
+                      echo "$COMMAND_OUTPUT" > "$HOME/.ssh/id_rsa"
+                      chmod 600 "$HOME/.ssh/id_rsa"
+                      KEY_SIZE=$(wc -c < "$HOME/.ssh/id_rsa")
+                      if [ "$KEY_SIZE" -gt 100 ]; then
+                        echo "✓ SSH key retrieved from control plane via SSM (size: $KEY_SIZE bytes)"
+                        echo "✓ SSH key ready (Method 5: AWS SSM)"
+                        exit 0
+                      fi
+                    fi
+                    
+                    if [ "$COMMAND_OUTPUT" == "NOT_FOUND" ]; then
+                      echo "✗ Key not found on control plane"
+                      break
+                    fi
+                    
+                    sleep 2
+                  done
+                fi
+              fi
+              
+              # Method 6: Generate new temporary key and add to control plane via SSM
+              echo ""
+              echo "Method 6: Generating new temporary SSH key and adding to control plane via SSM..."
+              ssh-keygen -t rsa -b 4096 -f "$HOME/.ssh/temp_key" -N "" -q 2>/dev/null
+              
+              if [ -f "$HOME/.ssh/temp_key.pub" ]; then
+                PUB_KEY=$(cat "$HOME/.ssh/temp_key.pub")
+                echo "Generated temporary key. Adding to control plane authorized_keys via SSM..."
+                
+                # Add public key to control plane via SSM
+                SSM_ADD_KEY=$(aws ssm send-command \
+                  --instance-ids "$INSTANCE_ID" \
+                  --document-name "AWS-RunShellScript" \
+                  --parameters "commands=[\"echo '$PUB_KEY' >> /home/ubuntu/.ssh/authorized_keys\", \"chmod 600 /home/ubuntu/.ssh/authorized_keys\", \"chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys\"]" \
+                  --region "${{ secrets.AWS_REGION || 'us-east-1' }}" \
+                  --output json 2>/dev/null || echo "")
+                
+                if [ -n "$SSM_ADD_KEY" ]; then
+                  ADD_COMMAND_ID=$(echo "$SSM_ADD_KEY" | grep -o '"CommandId": "[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+                  if [ -n "$ADD_COMMAND_ID" ]; then
+                    echo "Waiting for key to be added..."
+                    sleep 5
+                    
+                    # Verify key was added
+                    ADD_RESULT=$(aws ssm get-command-invocation \
+                      --command-id "$ADD_COMMAND_ID" \
+                      --instance-id "$INSTANCE_ID" \
+                      --region "${{ secrets.AWS_REGION || 'us-east-1' }}" \
+                      --query 'Status' \
+                      --output text 2>/dev/null || echo "")
+                    
+                    if [ "$ADD_RESULT" == "Success" ]; then
+                      mv "$HOME/.ssh/temp_key" "$HOME/.ssh/id_rsa"
+                      chmod 600 "$HOME/.ssh/id_rsa"
+                      echo "✓ Temporary SSH key generated and added to control plane"
+                      echo "✓ SSH key ready (Method 6: Generated Temporary Key via SSM)"
+                      exit 0
+                    fi
+                  fi
+                fi
+              fi
+              
+              # Method 7: Use AWS EC2 Instance Connect (no SSM required)
+              echo ""
+              echo "Method 7: Attempting to use AWS EC2 Instance Connect..."
+              if command -v aws &> /dev/null; then
+                # Generate a temporary key for EC2 Instance Connect
+                ssh-keygen -t rsa -b 4096 -f "$HOME/.ssh/ec2_connect_key" -N "" -q 2>/dev/null
+                if [ -f "$HOME/.ssh/ec2_connect_key.pub" ]; then
+                  PUB_KEY=$(cat "$HOME/.ssh/ec2_connect_key.pub")
+                  
+                  # Send public key via EC2 Instance Connect API
+                  AVAILABILITY_ZONE=$(aws ec2 describe-instances \
+                    --instance-ids "$INSTANCE_ID" \
+                    --query 'Reservations[0].Instances[0].Placement.AvailabilityZone' \
+                    --output text \
+                    --region "${{ secrets.AWS_REGION || 'us-east-1' }}" 2>/dev/null || echo "")
+                  
+                  if [ -n "$AVAILABILITY_ZONE" ] && [ "$AVAILABILITY_ZONE" != "None" ]; then
+                    echo "Sending SSH key via EC2 Instance Connect..."
+                    EC2_CONNECT_RESULT=$(aws ec2-instance-connect send-ssh-public-key \
+                      --instance-id "$INSTANCE_ID" \
+                      --availability-zone "$AVAILABILITY_ZONE" \
+                      --instance-os-user "ubuntu" \
+                      --ssh-public-key file://"$HOME/.ssh/ec2_connect_key.pub" \
+                      --region "${{ secrets.AWS_REGION || 'us-east-1' }}" \
+                      2>&1 || echo "")
+                    
+                    if echo "$EC2_CONNECT_RESULT" | grep -q "Success" || echo "$EC2_CONNECT_RESULT" | grep -q "200"; then
+                      echo "✓ EC2 Instance Connect key sent successfully"
+                      echo "Note: This key is temporary (valid for 60 seconds)"
+                      echo "Attempting to retrieve original key from control plane..."
+                      
+                      # Try to SSH and get the original key (we have 60 seconds)
+                      sleep 2
+                      if ssh -i "$HOME/.ssh/ec2_connect_key" \
+                         -o StrictHostKeyChecking=no \
+                         -o ConnectTimeout=10 \
+                         ubuntu@$CONTROL_PLANE_IP \
+                         "if [ -f /home/ubuntu/.ssh/kp_backup.pem ]; then cat /home/ubuntu/.ssh/kp_backup.pem; else echo 'NOT_FOUND'; fi" \
+                         > "$HOME/.ssh/id_rsa" 2>/dev/null; then
+                        KEY_SIZE=$(wc -c < "$HOME/.ssh/id_rsa" 2>/dev/null || echo "0")
+                        if [ "$KEY_SIZE" -gt 100 ]; then
+                          chmod 600 "$HOME/.ssh/id_rsa"
+                          echo "✓ Original SSH key retrieved via EC2 Instance Connect (size: $KEY_SIZE bytes)"
+                          echo "✓ SSH key ready (Method 7: EC2 Instance Connect)"
+                          exit 0
+                        fi
+                      fi
+                      
+                      # If we can't get the original, use the temporary key
+                      mv "$HOME/.ssh/ec2_connect_key" "$HOME/.ssh/id_rsa"
+                      chmod 600 "$HOME/.ssh/id_rsa"
+                      echo "✓ Using temporary key from EC2 Instance Connect"
+                      echo "⚠ Note: This is a temporary key. Original key should be retrieved on next run."
+                      echo "✓ SSH key ready (Method 7: EC2 Instance Connect - Temporary)"
+                      exit 0
+                    fi
+                  fi
+                fi
+              fi
+            else
+              echo "✗ Could not find instance ID for control plane IP: $CONTROL_PLANE_IP"
+            fi
+          else
+            echo "✗ Control plane IP not available"
+          fi
+          
           echo ""
           echo "=== All methods failed ==="
           echo "SSH key could not be retrieved from any source."
+          echo ""
+          echo "Possible solutions:"
+          echo "1. Re-run the infrastructure job to regenerate the SSH key"
+          echo "2. Manually provide the SSH key via GitHub Secrets"
+          echo "3. Ensure AWS Systems Manager is enabled on the control plane instance"
 
       - name: Verify SSH key is available
         run: |
