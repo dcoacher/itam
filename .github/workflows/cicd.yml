@@ -539,24 +539,112 @@ jobs:
           retention-days: 1
 
       - name: Wait for EC2 instances to be ready
+        timeout-minutes: 10
         run: |
           CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
           WORKER1_IP="${{ steps.terraform-output.outputs.worker1_ip }}"
           WORKER2_IP="${{ steps.terraform-output.outputs.worker2_ip }}"
-          echo "Waiting for instances to be ready..."
-          for IP in "$CONTROL_PLANE_IP" "$WORKER1_IP" "$WORKER2_IP"; do
-            echo "Waiting for $IP..."
-            for i in {1..30}; do
-              if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i iac/terraform/KP.pem ubuntu@$IP "echo 'ready'" 2>/dev/null; then
-                echo "$IP is ready"
-                break
+          SSH_KEY_PATH="iac/terraform/KP.pem"
+          
+          echo "Waiting for instances to be SSH-ready..."
+          echo "Control Plane: $CONTROL_PLANE_IP"
+          echo "Worker 1: $WORKER1_IP"
+          echo "Worker 2: $WORKER2_IP"
+          
+          # Function to wait for SSH with diagnostics
+          wait_for_ssh() {
+            local IP=$1
+            local NAME=$2
+            local MAX_ATTEMPTS=60  # 10 minutes total (60 * 10 seconds)
+            local ATTEMPT=0
+            
+            echo ""
+            echo "=== Waiting for $NAME ($IP) ==="
+            
+            # First, check if instance is running
+            echo "Checking instance status..."
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --filters "Name=ip-address,Values=$IP" "Name=instance-state-name,Values=running,stopping,stopped" \
+              --query 'Reservations[0].Instances[0].InstanceId' \
+              --output text --region us-east-1 2>/dev/null || echo "")
+            
+            if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" == "None" ]; then
+              echo "WARNING: Could not find instance with IP $IP"
+              echo "Instance may still be starting. Continuing to wait..."
+            else
+              echo "Found instance: $INSTANCE_ID"
+              INSTANCE_STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].State.Name' --output text --region us-east-1 2>/dev/null || echo "unknown")
+              echo "Instance state: $INSTANCE_STATE"
+            fi
+            
+            while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+              ATTEMPT=$((ATTEMPT + 1))
+              
+              # Try SSH connection
+              if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY_PATH" ubuntu@$IP "echo 'SSH ready'" 2>/dev/null; then
+                echo "✓ $NAME ($IP) is SSH-ready after $ATTEMPT attempts"
+                return 0
               fi
-              echo "Attempt $i/30..."
+              
+              # Every 6 attempts (1 minute), show diagnostics
+              if [ $((ATTEMPT % 6)) -eq 0 ]; then
+                echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: SSH not ready yet..."
+                if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+                  INSTANCE_STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].State.Name' --output text --region us-east-1 2>/dev/null || echo "unknown")
+                  echo "  Instance state: $INSTANCE_STATE"
+                  
+                  # Check security group allows SSH
+                  SG_ID=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text --region us-east-1 2>/dev/null || echo "")
+                  if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
+                    SSH_RULE=$(aws ec2 describe-security-groups --group-ids "$SG_ID" --query 'SecurityGroups[0].IpPermissions[?FromPort==`22`]' --output text --region us-east-1 2>/dev/null || echo "")
+                    if [ -z "$SSH_RULE" ]; then
+                      echo "  WARNING: Security group may not allow SSH on port 22"
+                    fi
+                  fi
+                fi
+              else
+                echo "Attempt $ATTEMPT/$MAX_ATTEMPTS..."
+              fi
+              
               sleep 10
             done
-          done
+            
+            echo "⚠ WARNING: $NAME ($IP) did not become SSH-ready after $MAX_ATTEMPTS attempts (10 minutes)"
+            echo "This may be due to:"
+            echo "  - Instance still booting (check AWS Console)"
+            echo "  - Security group blocking SSH"
+            echo "  - SSH key mismatch"
+            echo "  - Instance in error state"
+            return 1
+          }
+          
+          # Wait for each instance (continue even if one fails)
+          FAILED_INSTANCES=0
+          
+          if [ -n "$CONTROL_PLANE_IP" ] && [ "$CONTROL_PLANE_IP" != "null" ] && [ "$CONTROL_PLANE_IP" != "None" ]; then
+            wait_for_ssh "$CONTROL_PLANE_IP" "Control Plane" || FAILED_INSTANCES=$((FAILED_INSTANCES + 1))
+          fi
+          
+          if [ -n "$WORKER1_IP" ] && [ "$WORKER1_IP" != "null" ] && [ "$WORKER1_IP" != "None" ]; then
+            wait_for_ssh "$WORKER1_IP" "Worker 1" || FAILED_INSTANCES=$((FAILED_INSTANCES + 1))
+          fi
+          
+          if [ -n "$WORKER2_IP" ] && [ "$WORKER2_IP" != "null" ] && [ "$WORKER2_IP" != "None" ]; then
+            wait_for_ssh "$WORKER2_IP" "Worker 2" || FAILED_INSTANCES=$((FAILED_INSTANCES + 1))
+          fi
+          
+          if [ $FAILED_INSTANCES -gt 0 ]; then
+            echo ""
+            echo "⚠ WARNING: $FAILED_INSTANCES instance(s) did not become SSH-ready"
+            echo "The workflow will continue, but some steps may fail."
+            echo "Check AWS Console for instance status and security group configuration."
+          else
+            echo ""
+            echo "✓ All instances are SSH-ready"
+          fi
           
           # Wait a bit more for user-data scripts to start
+          echo ""
           echo "Waiting for user-data scripts to initialize..."
           sleep 30
 
