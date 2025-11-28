@@ -138,12 +138,29 @@ jobs:
             exit 1
           fi
 
+      - name: Check if outputs exist in state
+        id: check-outputs
+        working-directory: iac/terraform
+        run: |
+          # Check if outputs exist in Terraform state
+          if terraform output CONTROL-PLANE-PUBLIC-IP &>/dev/null 2>&1; then
+            echo "Outputs exist in Terraform state"
+            echo "outputs_exist=true" >> $GITHUB_OUTPUT
+          else
+            echo "Outputs not found in Terraform state"
+            echo "outputs_exist=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Terraform Apply
         working-directory: iac/terraform
         run: |
           if [ "${{ steps.terraform-plan.outputs.has_changes }}" == "true" ]; then
             echo "Applying Terraform changes..."
             terraform apply -auto-approve tfplan
+          elif [ "${{ steps.check-outputs.outputs.outputs_exist }}" != "true" ]; then
+            echo "No changes detected, but outputs are missing from state."
+            echo "Running terraform apply to populate outputs..."
+            terraform apply -auto-approve
           else
             echo "No changes detected. Skipping Terraform apply."
             echo "Using existing infrastructure."
@@ -200,13 +217,21 @@ jobs:
                 sleep 5
               else
                 echo "ERROR: Failed to retrieve Terraform outputs after $MAX_RETRIES attempts"
-                echo "Checking Terraform state..."
-                terraform state list || echo "No state found"
                 echo ""
-                echo "Checking Terraform outputs (raw)..."
-                terraform output -raw CONTROL-PLANE-PUBLIC-IP 2>&1 || echo "No output available"
-                terraform output -raw WORKER-1-PUBLIC-IP 2>&1 || echo "No output available"
-                terraform output -raw WORKER-2-PUBLIC-IP 2>&1 || echo "No output available"
+                echo "=== Diagnostic Information ==="
+                echo "Checking Terraform state..."
+                terraform state list 2>&1 | head -20 || echo "No state found"
+                echo ""
+                echo "Checking if resources exist in state..."
+                terraform state show aws_instance.CONTROL-PLANE 2>&1 | head -5 || echo "Control plane not in state"
+                echo ""
+                echo "Checking all Terraform outputs..."
+                terraform output 2>&1 || echo "No outputs available"
+                echo ""
+                echo "If outputs are missing, this usually means:"
+                echo "1. Infrastructure was created but outputs weren't saved to state"
+                echo "2. State file is missing or corrupted"
+                echo "3. Outputs need to be populated by running 'terraform apply'"
                 exit 1
               fi
             fi
@@ -479,3 +504,4 @@ jobs:
           echo ""
           echo "✓ Deployment completed"
           echo "Image deployed: ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}"
+
