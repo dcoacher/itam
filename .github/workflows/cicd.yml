@@ -115,12 +115,39 @@ jobs:
         run: terraform init
 
       - name: Terraform Plan
+        id: terraform-plan
         working-directory: iac/terraform
-        run: terraform plan -out=tfplan
+        run: |
+          set +e
+          terraform plan -out=tfplan -detailed-exitcode
+          PLAN_EXIT_CODE=$?
+          set -e
+          if [ $PLAN_EXIT_CODE -eq 0 ]; then
+            echo "No changes needed. Infrastructure is up to date."
+            echo "infrastructure_exists=true" >> $GITHUB_OUTPUT
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          elif [ $PLAN_EXIT_CODE -eq 1 ]; then
+            echo "ERROR: Terraform plan failed"
+            exit 1
+          elif [ $PLAN_EXIT_CODE -eq 2 ]; then
+            echo "Changes detected. Infrastructure needs to be created or updated."
+            echo "infrastructure_exists=false" >> $GITHUB_OUTPUT
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: Unexpected exit code: $PLAN_EXIT_CODE"
+            exit 1
+          fi
 
       - name: Terraform Apply
         working-directory: iac/terraform
-        run: terraform apply -auto-approve tfplan
+        run: |
+          if [ "${{ steps.terraform-plan.outputs.has_changes }}" == "true" ]; then
+            echo "Applying Terraform changes..."
+            terraform apply -auto-approve tfplan
+          else
+            echo "No changes detected. Skipping Terraform apply."
+            echo "Using existing infrastructure."
+          fi
 
       - name: Get Terraform Outputs
         id: terraform-output
