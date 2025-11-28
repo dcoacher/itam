@@ -80,6 +80,7 @@ jobs:
       control_plane_ip: ${{ steps.terraform-output.outputs.control_plane_ip }}
       worker1_ip: ${{ steps.terraform-output.outputs.worker1_ip }}
       worker2_ip: ${{ steps.terraform-output.outputs.worker2_ip }}
+      ssh_key_base64: ${{ steps.ssh-key-output.outputs.ssh_key_base64 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -587,6 +588,20 @@ jobs:
             fi
           fi
 
+      - name: Prepare SSH key output (base64 encoded)
+        id: ssh-key-output
+        continue-on-error: true
+        working-directory: iac/terraform
+        run: |
+          if [ -f "KP.pem" ]; then
+            SSH_KEY_B64=$(base64 -w 0 KP.pem || base64 KP.pem | tr -d '\n')
+            echo "ssh_key_base64=$SSH_KEY_B64" >> $GITHUB_OUTPUT
+            echo "✓ SSH key prepared for workflow output (base64 encoded)"
+          else
+            echo "⚠ SSH key not available for workflow output"
+            echo "ssh_key_base64=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload SSH key as artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -970,6 +985,19 @@ jobs:
         with:
           version: 'latest'
 
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
       - name: Download SSH key artifact
         continue-on-error: true
         uses: actions/download-artifact@v4
@@ -977,34 +1005,45 @@ jobs:
           name: ssh-key
           path: ~/.ssh/
 
-      - name: Retrieve SSH key from Terraform state (if artifact missing)
+      - name: Retrieve SSH key (artifact, workflow output, or Terraform state)
         continue-on-error: true
         run: |
           mkdir -p ~/.ssh
           
-          # Check if we already have the key
-          if [ -f "$HOME/.ssh/KP.pem" ] || [ -f "$HOME/.ssh/id_rsa" ]; then
-            echo "✓ SSH key already available"
-            if [ -f "$HOME/.ssh/KP.pem" ]; then
-              mv "$HOME/.ssh/KP.pem" "$HOME/.ssh/id_rsa"
-            fi
+          # Method 1: Check if artifact download worked
+          if [ -f "$HOME/.ssh/KP.pem" ]; then
+            echo "✓ SSH key downloaded from artifact"
+            mv "$HOME/.ssh/KP.pem" "$HOME/.ssh/id_rsa"
             chmod 600 "$HOME/.ssh/id_rsa"
             exit 0
           fi
           
-          echo "SSH key artifact not found. Attempting to retrieve from Terraform state..."
+          # Method 2: Try workflow output (base64 encoded)
+          SSH_KEY_B64="${{ needs.infrastructure.outputs.ssh_key_base64 }}"
+          if [ -n "$SSH_KEY_B64" ] && [ "$SSH_KEY_B64" != "" ]; then
+            echo "✓ SSH key found in workflow output. Decoding..."
+            echo "$SSH_KEY_B64" | base64 -d > "$HOME/.ssh/id_rsa" 2>/dev/null || \
+            echo "$SSH_KEY_B64" | base64 -D > "$HOME/.ssh/id_rsa" 2>/dev/null || \
+            echo "$SSH_KEY_B64" | base64 --decode > "$HOME/.ssh/id_rsa" 2>/dev/null
+            if [ -f "$HOME/.ssh/id_rsa" ]; then
+              chmod 600 "$HOME/.ssh/id_rsa"
+              KEY_SIZE=$(wc -c < "$HOME/.ssh/id_rsa")
+              if [ "$KEY_SIZE" -gt 100 ]; then
+                echo "✓ SSH key decoded from workflow output (size: $KEY_SIZE bytes)"
+                exit 0
+              else
+                rm -f "$HOME/.ssh/id_rsa"
+              fi
+            fi
+          fi
           
-          # Set up Terraform to access state
+          # Method 3: Retrieve from Terraform state
+          echo "SSH key not found in artifact or workflow output. Attempting to retrieve from Terraform state..."
+          
           cd iac/terraform
           
-          # Configure AWS credentials (same as infrastructure job)
-          export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
-          export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-          export AWS_SESSION_TOKEN="${{ secrets.AWS_SESSION_TOKEN }}"
-          export AWS_DEFAULT_REGION="${{ secrets.AWS_REGION || 'us-east-1' }}"
-          
           # Initialize Terraform (if needed)
-          terraform init -backend=false 2>/dev/null || terraform init
+          terraform init 2>/dev/null || true
           
           # Try to get SSH key from Terraform state
           if terraform state show tls_private_key.ITAM-KP &>/dev/null 2>&1; then
@@ -1017,6 +1056,7 @@ jobs:
               echo "$PRIVATE_KEY" > "$HOME/.ssh/id_rsa"
               chmod 600 "$HOME/.ssh/id_rsa"
               echo "✓ SSH key retrieved from Terraform state (JSON)"
+              exit 0
             else
               # Try text output
               PRIVATE_KEY=$(terraform state show tls_private_key.ITAM-KP 2>/dev/null | grep "private_key_pem" | head -1 | sed 's/.*= "\(.*\)".*/\1/' || echo "")
@@ -1024,6 +1064,7 @@ jobs:
                 echo "$PRIVATE_KEY" > "$HOME/.ssh/id_rsa"
                 chmod 600 "$HOME/.ssh/id_rsa"
                 echo "✓ SSH key retrieved from Terraform state (text)"
+                exit 0
               else
                 echo "⚠ Could not extract valid SSH key from Terraform state"
               fi
