@@ -22,8 +22,8 @@ systemctl enable containerd
 apt install -y apt-transport-https ca-certificates curl gpg
 KUBE_VERSION=$(curl -s https://api.github.com/repos/kubernetes/kubernetes/releases/latest | grep tag_name | cut -d '"' -f 4 | cut -d 'v' -f 2 | cut -d '.' -f 1,2)
 mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v${KUBE_VERSION}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v${KUBE_VERSION}/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v$${KUBE_VERSION}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v$${KUBE_VERSION}/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
 apt update
 apt install -y kubelet kubeadm kubectl
 apt-mark hold kubelet kubeadm kubectl
@@ -204,10 +204,10 @@ type: application
 version: 1.0.0
 appVersion: "1.0"
 EOF
-cat <<'EOF' >/home/ubuntu/helm/values.yaml
+cat <<EOF >/home/ubuntu/helm/values.yaml
 replicaCount: 2
 image:
-  repository: docker.io/${docker_repo}/itam-app
+  repository: docker.io/${docker_username}/itam-app
   tag: "latest"
   pullPolicy: Always
 service:
@@ -388,8 +388,8 @@ echo "PersistentVolume status: $PV_STATUS"
 echo ""
 echo "Step 3: Deploying application..."
 # Accept image parameters (optional, defaults from values.yaml)
-IMAGE_REPO="${1:-}"
-IMAGE_TAG="${2:-}"
+IMAGE_REPO="$${1:-}"
+IMAGE_TAG="$${2:-}"
 if command -v helm &> /dev/null; then
   # Check if Helm release exists
   if helm list -n default | grep -q "itam-app"; then
