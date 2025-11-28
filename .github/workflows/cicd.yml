@@ -190,7 +190,7 @@ jobs:
           else
             echo "Deployment not found. Creating new deployment..."
             # Create PVC
-            kubectl apply -f - <<EOF
+            cat <<'PVCEOF' | kubectl apply -f -
             apiVersion: v1
             kind: PersistentVolumeClaim
             metadata:
@@ -204,9 +204,9 @@ jobs:
               resources:
                 requests:
                   storage: 1Gi
-            EOF
+            PVCEOF
             # Create Deployment
-            kubectl apply -f - <<EOF
+            cat <<DEPLOYEOF | kubectl apply -f -
             apiVersion: apps/v1
             kind: Deployment
             metadata:
@@ -258,9 +258,9 @@ jobs:
                   - name: data
                     persistentVolumeClaim:
                       claimName: itam-app-pvc
-            EOF
+            DEPLOYEOF
             # Create Service
-            kubectl apply -f - <<EOF
+            cat <<'SVCEOF' | kubectl apply -f -
             apiVersion: v1
             kind: Service
             metadata:
@@ -277,7 +277,7 @@ jobs:
                 nodePort: 31415
               selector:
                 app: itam-app
-            EOF
+            SVCEOF
             # Wait for deployment to be ready
             echo "Waiting for deployment to be ready..."
             kubectl wait --for=condition=available deployment/itam-app -n default --timeout=5m || true
