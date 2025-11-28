@@ -1258,16 +1258,36 @@ jobs:
           volumeBindingMode: Immediate
           EOF
 
-      - name: Ensure control plane taint
+      - name: Verify cluster nodes and configure scheduling
         run: |
           CONTROL_PLANE_IP="${{ needs.infrastructure.outputs.control_plane_ip }}"
-          echo "Ensuring control plane has taint (this prevents pods from scheduling there)..."
+          echo "Verifying cluster nodes and ensuring proper scheduling..."
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
-            # Ensure control plane has taint - this is the key to prevent pod scheduling
+            echo "=== Current cluster nodes ==="
+            kubectl get nodes -o wide
+            echo ""
+            
+            # Ensure control plane has taint
+            echo "Ensuring control plane taint..."
             kubectl taint nodes k8s-controller node-role.kubernetes.io/control-plane:NoSchedule --overwrite 2>/dev/null || \
             kubectl taint nodes k8s-controller node-role.kubernetes.io/master:NoSchedule --overwrite 2>/dev/null || \
             echo "Taint already exists"
             
+            # Get all nodes except control plane
+            WORKER_NODES=\$(kubectl get nodes -o jsonpath='{.items[?(@.metadata.name!="k8s-controller")].metadata.name}')
+            if [ -z "\$WORKER_NODES" ]; then
+              echo "⚠ WARNING: No worker nodes found in cluster!"
+              echo "This means pods can only schedule on control plane (which has taint)"
+              echo "Pods will be Pending until worker nodes join the cluster"
+            else
+              echo "Found worker nodes: \$WORKER_NODES"
+              for node in \$WORKER_NODES; do
+                echo "Checking node: \$node"
+                kubectl get node \$node
+              done
+            fi
+            
+            echo ""
             echo "=== Node taints ==="
             kubectl describe nodes | grep -A 2 "Taints:" || echo "No taints found"
           ENDSSH
@@ -1291,26 +1311,44 @@ jobs:
           kubectl get pods -l app=itam-app -o wide || echo "No pods found"
           kubectl get deployment itam-app || echo "Deployment not found"
           
-          # If pods are on control plane, delete them and patch deployment to ensure they don't go back
-          echo "Checking if any pods are on control plane..."
+          # Check node status
+          echo ""
+          echo "=== Cluster node status ==="
+          kubectl get nodes -o wide
+          
+          # Check if pods are on control plane
+          echo ""
+          echo "Checking pod distribution..."
           PODS_ON_CP=$(kubectl get pods -l app=itam-app -o wide --no-headers 2>/dev/null | grep "k8s-controller" | awk '{print $1}' || echo "")
-          if [ -n "$PODS_ON_CP" ]; then
-            echo "⚠ Found pods on control plane! This shouldn't happen."
-            echo "Deleting pods and ensuring deployment excludes control plane..."
-            
-            # Delete pods on control plane
+          WORKER_NODES=$(kubectl get nodes -o jsonpath='{.items[?(@.metadata.name!="k8s-controller")].metadata.name}' 2>/dev/null || echo "")
+          
+          if [ -z "$WORKER_NODES" ]; then
+            echo "⚠ WARNING: No worker nodes in cluster!"
+            echo "Pods will schedule on control plane if no workers are available"
+            echo "This is expected if workers haven't joined yet"
+          elif [ -n "$PODS_ON_CP" ]; then
+            echo "⚠ Found pods on control plane. Deleting to force rescheduling on workers..."
             echo "$PODS_ON_CP" | while read -r pod; do
               if [ -n "$pod" ]; then
                 kubectl delete pod "$pod" --grace-period=0 --force 2>/dev/null || true
               fi
             done
-            
-            # Ensure deployment has nodeAffinity to exclude control plane
-            echo "Adding nodeAffinity to deployment to exclude control plane..."
-            kubectl patch deployment itam-app -p '{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"node-role.kubernetes.io/control-plane","operator":"DoesNotExist"},{"key":"node-role.kubernetes.io/master","operator":"DoesNotExist"}]}]}}}}}}}}' || echo "Failed to patch deployment"
-            
             echo "Waiting for pods to reschedule on worker nodes..."
             sleep 20
+          else
+            echo "✓ No pods on control plane"
+          fi
+          
+          # Show pending pods details
+          PENDING_PODS=$(kubectl get pods -l app=itam-app -o jsonpath='{.items[?(@.status.phase=="Pending")].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$PENDING_PODS" ]; then
+            echo ""
+            echo "=== Pending pods (checking why they can't schedule) ==="
+            for pod in $PENDING_PODS; do
+              echo "Pod: $pod"
+              kubectl describe pod $pod | grep -A 15 "Events:" || true
+              echo ""
+            done
           fi
           
           echo ""
