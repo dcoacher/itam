@@ -148,7 +148,7 @@ jobs:
             echo "No changes detected. Skipping Terraform apply."
             echo "Using existing infrastructure."
             echo "Refreshing Terraform state to ensure outputs are current..."
-            terraform refresh -auto-approve || echo "Refresh completed (some resources may not support refresh)"
+            terraform refresh || echo "Refresh completed (some resources may not support refresh)"
           fi
 
       - name: Get Terraform Outputs
@@ -160,17 +160,32 @@ jobs:
           RETRY_COUNT=0
           
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            # Try to get outputs, suppress warnings
-            CONTROL_PLANE_IP=$(terraform output -raw CONTROL-PLANE-PUBLIC-IP 2>/dev/null || echo "")
-            WORKER1_IP=$(terraform output -raw WORKER-1-PUBLIC-IP 2>/dev/null || echo "")
-            WORKER2_IP=$(terraform output -raw WORKER-2-PUBLIC-IP 2>/dev/null || echo "")
+            # Get outputs using -raw, capture both stdout and stderr, filter out warnings
+            # Use tail -1 to get only the last line (the actual value)
+            CONTROL_PLANE_IP=$(terraform output -raw CONTROL-PLANE-PUBLIC-IP 2>&1 | grep -v "Warning:" | grep -v "│" | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -1 || echo "")
+            WORKER1_IP=$(terraform output -raw WORKER-1-PUBLIC-IP 2>&1 | grep -v "Warning:" | grep -v "│" | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -1 || echo "")
+            WORKER2_IP=$(terraform output -raw WORKER-2-PUBLIC-IP 2>&1 | grep -v "Warning:" | grep -v "│" | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -1 || echo "")
             
-            # Check if we got valid IPs (not empty and not warning messages)
+            # Alternative: Try to get just the value line if the above doesn't work
+            if [ -z "$CONTROL_PLANE_IP" ]; then
+              CONTROL_PLANE_IP=$(terraform output -raw CONTROL-PLANE-PUBLIC-IP 2>&1 | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -1 || echo "")
+            fi
+            if [ -z "$WORKER1_IP" ]; then
+              WORKER1_IP=$(terraform output -raw WORKER-1-PUBLIC-IP 2>&1 | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -1 || echo "")
+            fi
+            if [ -z "$WORKER2_IP" ]; then
+              WORKER2_IP=$(terraform output -raw WORKER-2-PUBLIC-IP 2>&1 | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -1 || echo "")
+            fi
+            
+            # Check if we got valid IPs (not empty and matches IP pattern)
             if [ -n "$CONTROL_PLANE_IP" ] && [ -n "$WORKER1_IP" ] && [ -n "$WORKER2_IP" ] && \
-               [ "$CONTROL_PLANE_IP" != "Warning: No outputs found" ] && \
-               [ "$WORKER1_IP" != "Warning: No outputs found" ] && \
-               [ "$WORKER2_IP" != "Warning: No outputs found" ]; then
+               echo "$CONTROL_PLANE_IP" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" && \
+               echo "$WORKER1_IP" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" && \
+               echo "$WORKER2_IP" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
               echo "✓ Successfully retrieved Terraform outputs"
+              echo "Control Plane IP: $CONTROL_PLANE_IP"
+              echo "Worker 1 IP: $WORKER1_IP"
+              echo "Worker 2 IP: $WORKER2_IP"
               echo "control_plane_ip=$CONTROL_PLANE_IP" >> $GITHUB_OUTPUT
               echo "worker1_ip=$WORKER1_IP" >> $GITHUB_OUTPUT
               echo "worker2_ip=$WORKER2_IP" >> $GITHUB_OUTPUT
@@ -179,12 +194,19 @@ jobs:
               RETRY_COUNT=$((RETRY_COUNT + 1))
               if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
                 echo "Outputs not ready yet. Retrying in 5 seconds... ($RETRY_COUNT/$MAX_RETRIES)"
+                echo "Debug - Control Plane: '$CONTROL_PLANE_IP'"
+                echo "Debug - Worker 1: '$WORKER1_IP'"
+                echo "Debug - Worker 2: '$WORKER2_IP'"
                 sleep 5
               else
                 echo "ERROR: Failed to retrieve Terraform outputs after $MAX_RETRIES attempts"
                 echo "Checking Terraform state..."
                 terraform state list || echo "No state found"
-                terraform output || echo "No outputs available"
+                echo ""
+                echo "Checking Terraform outputs (raw)..."
+                terraform output -raw CONTROL-PLANE-PUBLIC-IP 2>&1 || echo "No output available"
+                terraform output -raw WORKER-1-PUBLIC-IP 2>&1 || echo "No output available"
+                terraform output -raw WORKER-2-PUBLIC-IP 2>&1 || echo "No output available"
                 exit 1
               fi
             fi
