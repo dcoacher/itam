@@ -48,7 +48,7 @@ Make your IT Asset Management process simple and controlled. ITAM is a complete 
 - **Cloud Infrastructure**: AWS
 
 ### 2.2 High-Level Architecture
-
+```
              🌐Internet 
                   ↓
  ⚖️ Application Load Balancer (ALB) :80
@@ -65,6 +65,7 @@ Make your IT Asset Management process simple and controlled. ITAM is a complete 
     ├── ☸️ Kubernetes API Server
     └── 💾 NFS Server (/srv/nfs/k8s)
         └── 📄 users.json, items.json
+```
 
 ### 2.3 Data Structure
 #### Users Data (`users.json`)
