@@ -53,7 +53,7 @@ Make your IT Asset Management process simple and controlled. ITAM is a complete 
                   ↓
  ⚖️ Application Load Balancer (ALB) :80
                   ↓
-      🎯 Target Group :31415
+        🎯 Target Group :31415
                   ↓
   🖥️ Worker Node 1 ──→ 📦 Pod 1 (App)
                   ↓
@@ -232,10 +232,10 @@ Items are stored as a JSON object where each key is an item ID and the value con
 
 ### 4.4 Infrastructure as Code
 #### Terraform
-**Purpose**: Provision and manage AWS infrastructure
+- **Purpose**: Provision and manage AWS infrastructure
 
 #### Ansible
-**Purpose**: Configures NFS clients on worker nodes
+- **Purpose**: Configures NFS clients on worker nodes
 
 #### User-Data Scripts
 - **Control Plane** (`user-data-control-plane.sh`):
@@ -317,7 +317,7 @@ For Application Deployment please use separate [Application User Guide](https://
 [![GPLv3 License](https://img.shields.io/badge/License-GPL%20v3-yellow.svg)](https://github.com/dcoacher/ITAM/blob/main/LICENSE)
 
 ## 8. Authors
-- Desmond Coacher - [@dcoacher](https://github.com/dcoacher)
+Desmond Coacher - [@dcoacher](https://github.com/dcoacher)
 
 ## 9. Previous Versions
 **Name:** [IT Asset Management](https://github.com/dcoacher/it-asset-management)<br>
@@ -326,4 +326,4 @@ For Application Deployment please use separate [Application User Guide](https://
 
 ## 10. Feedback
 If you have any feedback, feel free to contact us via email: 
-- [Desmond Coacher](mailto:dcoacher@outlook.com)
+[Desmond Coacher](mailto:dcoacher@outlook.com)
