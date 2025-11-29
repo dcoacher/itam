@@ -39,11 +39,6 @@ variable "docker_repo" {
   type        = string
 }
 
-# variable "allowed_ip" {
-#   description = "Your IP address, allowed for SSH access"
-#   type        = string
-# }
-
 # Ansible User-Data Script for K8s Control Plane
 locals {
   control_plane_user_data = templatefile("${path.module}/../scripts/user-data-control-plane.sh", {

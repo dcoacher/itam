@@ -7,4 +7,3 @@ aws_session_token     = ""
 ami_id                = "ami-0c398cb65a93047f2"  # For Ubuntu Server 22.04 LTS (HVM), SSD Volume Type
 instance_type         = "t3.medium"
 docker_repo           = "dcoacher"
-# allowed_ip            = "176.229.47.121/32" # Change IP address to yours

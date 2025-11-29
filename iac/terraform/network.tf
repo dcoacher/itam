@@ -50,18 +50,6 @@ resource "aws_subnet" "ITAM-Public-Subnet-2" {
   }
 }
 
-# # Private Subnet for NFS (Deprecated)
-# resource "aws_subnet" "ITAM-Private-Subnet" {
-#   provider = aws.North-Virginia
-#   vpc_id            = aws_vpc.ITAM-VPC.id
-#   cidr_block        = "10.0.3.0/24"
-#   availability_zone = data.aws_availability_zones.available.names[0]
-
-#   tags = {
-#     Name = "itam-private-subnet"
-#   }
-# }
-
 # Route Table for Public Subnets
 resource "aws_route_table" "ITAM-RT" {
   provider = aws.North-Virginia
