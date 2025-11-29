@@ -303,6 +303,18 @@ jobs:
           # Show node status
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP "kubectl --kubeconfig=/home/ubuntu/.kube/config get nodes"
 
+      - name: Configure NFS clients on worker nodes using Ansible
+        run: |
+          CONTROL_PLANE_IP="${{ steps.terraform-output.outputs.control_plane_ip }}"
+          echo "Configuring NFS clients on worker nodes using Ansible..."
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
+            set -e
+            cd /home/ubuntu/ansible
+            echo "Running Ansible playbook to configure NFS clients..."
+            ansible-playbook nfs.yml -v
+            echo "✓ NFS clients configured on worker nodes"
+          ENDSSH
+
 
   # Phase 4: Deploy to Kubernetes
   deploy:
@@ -346,6 +358,21 @@ jobs:
           # Verify
           kubectl cluster-info
           kubectl get nodes
+
+      - name: Ensure NFS clients are configured on worker nodes
+        run: |
+          CONTROL_PLANE_IP="${{ needs.infrastructure.outputs.control_plane_ip }}"
+          echo "Ensuring NFS clients are configured on worker nodes..."
+          ssh -i ~/.ssh/KP.pem -o StrictHostKeyChecking=no ubuntu@$CONTROL_PLANE_IP <<ENDSSH
+            set -e
+            cd /home/ubuntu/ansible
+            if [ -f nfs.yml ]; then
+              echo "Running Ansible playbook to ensure NFS clients are configured..."
+              ansible-playbook nfs.yml -v || echo "NFS configuration may already be applied"
+            else
+              echo "⚠ NFS playbook not found, skipping Ansible configuration"
+            fi
+          ENDSSH
 
       - name: Deploy NFS PersistentVolume
         run: |

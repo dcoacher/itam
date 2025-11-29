@@ -46,12 +46,12 @@ variable "docker_repo" {
 
 # Ansible User-Data Script for K8s Control Plane
 locals {
-  ansible_control_plane_user_data = templatefile("${path.module}/../scripts/user-data-control-plane.sh", {
+  control_plane_user_data = templatefile("${path.module}/../scripts/user-data-control-plane.sh", {
     docker_username = var.docker_repo
   })
 }
 
 # Ansible User-Data Script for K8s Workers
 locals {
-  ansible_worker_user_data = file("${path.module}/../scripts/user-data-worker.sh")
+  worker_user_data = file("${path.module}/../scripts/user-data-worker.sh")
 }
