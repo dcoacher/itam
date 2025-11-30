@@ -37,9 +37,9 @@ For manual deployment method, ensure you have the following installed on your lo
 2. Open Visual Studio Code and add clone [GitHub Repository](https://github.com/dcoacher/ITAM/)
 3. Open Bash Terminal
 4. Build and Push an Application Image to Docker Hub
-- Build the image: `docker build -f docker/Dockerfile -t <your-dockerhub-username>/itam-app:latest .`
+- Build the image: `docker build -f docker/Dockerfile -t <your_dockerhub_username>/itam-app:latest .`
 - Login to Docker Hub: `docker login`
-- Push the image: `docker push <your-dockerhub-username>/itam-app:latest`
+- Push the image: `docker push <your_dockerhub_username>/itam-app:latest`
 5. Navigate to the Terraform directory and update the next values in`terraform.tfvars`:
 - aws_access_key_id     = `"aws_access_key_id_value"`
 - aws_secret_access_key = `"ws_secret_access_key_value"`
